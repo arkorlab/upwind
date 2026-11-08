@@ -1,6 +1,7 @@
 import type { BuildProjectManifestInput } from '../manifest/manifest.ts';
 import type { DynamicRoute } from '../manifest/schema.ts';
 import { PRIMARY_FUNCTION } from './function-name.ts';
+import { routeOfPathname } from './gate-routes.ts';
 import type { DeploymentBundle, Entrypoint, FunctionSpec, Prerender } from './schema.ts';
 import { routerSpellings } from './spelling.ts';
 
@@ -136,16 +137,31 @@ export function withFunctions(
   if (placed.size === 0) {
     return tables;
   }
-  // A dynamic route's destination names its template the way an entrypoint's pathname does.
+  // Keep direct entrypoints authoritative, including the primary Function. Other spellings belong
+  // to the prerender's original route, as do that page's payload and data destinations.
   const byTemplate = new Map(
-    bundle.entrypoints.flatMap((entry) =>
-      entry.function === undefined ? [] : [[entry.pathname, entry.function] as const],
-    ),
+    bundle.entrypoints.map((entry) => [entry.pathname, functionOfEntrypoint(entry)] as const),
   );
+  const byId = new Map(
+    bundle.entrypoints.map((entry) => [entry.id, functionOfEntrypoint(entry)] as const),
+  );
+  const routeOf = routeOfPathname(bundle);
+  const ownerOf = (template: string | undefined): string | undefined => {
+    if (template === undefined) {
+      return undefined;
+    }
+    const direct = byTemplate.get(template);
+    if (direct !== undefined) {
+      return direct;
+    }
+    const route = routeOf(template);
+    return route === undefined ? undefined : (byId.get(route) ?? byTemplate.get(route));
+  };
   const dynamicRoutes = tables.dynamicRoutes?.map((route, at): DynamicRoute => {
-    const template = templates[at];
-    const owner = template === undefined ? undefined : byTemplate.get(template);
-    return owner === undefined ? route : { ...route, function: owner };
+    const owner = ownerOf(templates[at]);
+    return owner === undefined || owner === PRIMARY_FUNCTION
+      ? route
+      : { ...route, function: owner };
   });
   const exactFunctions = exactFunctionsOf(bundle, routeKeys, placed);
   return {
