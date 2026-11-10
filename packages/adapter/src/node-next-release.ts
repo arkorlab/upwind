@@ -4,7 +4,7 @@ import path from 'node:path';
 
 /** A published Next.js release whose native sources the SDK qualifies, by their exact bytes. */
 export interface NativeNextRelease {
-  readonly version: '16.4.3' | '16.4.4' | '16.4.5';
+  readonly version: '16.4.3' | '16.4.4' | '16.4.5' | '16.4.6';
   /** The published `package.json`, by its exact bytes. */
   readonly packageJsonSha256: string;
   /**
@@ -55,8 +55,9 @@ function defineRelease(
   });
 }
 
-// Exact published next@16.4.3, next@16.4.4 and next@16.4.5 sources, from their integrity-verified
-// registry packages. 16.4.5 publishes the Pages runtimes as 16.4.4 does.
+// Exact published next@16.4.3 to next@16.4.6 sources, from their integrity-verified registry
+// packages. 16.4.5 publishes the Pages runtimes as 16.4.4 does, and 16.4.6 publishes the page
+// template and the Pages runtimes as 16.4.5 does.
 export const NATIVE_NEXT_RELEASES: readonly NativeNextRelease[] = Object.freeze([
   defineRelease('16.4.3', 'b67bad7944d603b27dd2d2719b57203fd3b3e5c147b2efa6dea5ceb135274caf', [
     '0a6a5c726f95e2df2600b2fd6d71e37fd72f936f8f4dc5b94fa38d40fcd62a6b',
@@ -102,6 +103,21 @@ export const NATIVE_NEXT_RELEASES: readonly NativeNextRelease[] = Object.freeze(
     'd8abc03d750a5e3b0195c865053650208701be436dcad80a1d1399207c48fe26',
     '43baf645026672a56cb8478dbd82be7e45d8ccfc58c4352b272f2d9ce7ab0d42',
     '5fe11bc762f2857a42d1d271e9107e3ecf7b9218eba4f72e4140ece190e97569',
+  ]),
+  defineRelease('16.4.6', 'ed29e68845a44d4cd30518dd0df0554fcf6f6ada99b81f4e8798d26dc6964f82', [
+    '5311e1a3e0dc044295cc4632c0be3458f1f1297a53f248d0f2663d6b5bc941f6',
+    '8ae6443acb762e96ba3c2ae455bab58ed62c77f3e9411cb546c701d872c405f0',
+    '40b5be17576272d876fbaec6507dc9b9324e6358907fa5b3132434a0c4e04ed8',
+    '211571517b965cdce52d54c546dd33c95d14737e8f855e17a4a2bb8f4061a795',
+    'f2b9bc71da6c8b3c5b12c0e87d4e41616bb97d640a94832b2fae1f9da4b42a34',
+    'c942ce0e1225d5173eb2c42dd9958727ae30c6a0e522b0ca939a2f9576c30f39',
+    '0adbf685547722a714dd900f2981897f841d424024202d91e6931a54e98110d7',
+    '4fbed6b321caa34a790fd6ee671a3ba8135d97dc8f49181f34c3c648f6124b6b',
+    '8d0dd3380764b15950850af06f229d666471e0c92cb31960d45c9be4e0d750c9',
+    '40d34576720fd4a364eb6edac5ea3f82bc060282b389cf8711ba38621ab5044c',
+    '09f59e2688eb979f852265eacb1b4203e1a71e095c4ce212387da9bbebd13d25',
+    '4257dfbf9cc1ac8d7365fee2cb48af345173680d27cd3fff0df0986714bff836',
+    '95d5e4846badadba5954f2a86745d657314014b16924415534df12617fb2e2d0',
   ]),
 ]);
 
