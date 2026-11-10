@@ -52,7 +52,7 @@ export const NODE_JWT_COMPILER_PROFILES: readonly NodeJwtCompilerProfile[] = Obj
   }),
   Object.freeze({
     name: 'next-16.4.4-fast-jwt-ncc-v1',
-    releases: Object.freeze(['16.4.4', '16.4.5'] as const),
+    releases: Object.freeze(['16.4.4', '16.4.5', '16.4.6'] as const),
     suffix: '/dist/compiled/fast-jwt/index.js',
     sha256: '8cc4cea3ed6b85a6771a2546bbb88dcd1ca21e6061d89057728d3da4ecccfabf',
     bytes: 131_737,
