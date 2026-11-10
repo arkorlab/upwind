@@ -180,8 +180,8 @@ catalogs:
       specifier: 0.3.31
       version: 0.3.31
     '@next/routing':
-      specifier: 16.4.5
-      version: 16.4.5
+      specifier: 16.4.6
+      version: 16.4.6
     '@oxc-project/types':
       specifier: 0.156.0
       version: 0.156.0
@@ -255,8 +255,8 @@ catalogs:
       specifier: 5.20261102.0-beta
       version: 5.20261102.0-beta
     next:
-      specifier: 16.4.5
-      version: 16.4.5
+      specifier: 16.4.6
+      version: 16.4.6
     oxc-parser:
       specifier: 0.156.0
       version: 0.156.0
@@ -409,13 +409,16 @@ importers:
         version: 5.20261102.0-beta(@types/node@24.19.2)
       next:
         specifier: 'catalog:'
-        version: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       next-16-4-3:
         specifier: npm:next@16.4.3
         version: next@16.4.3(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       next-16-4-4:
         specifier: npm:next@16.4.4
         version: next@16.4.4(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      next-16-4-5:
+        specifier: npm:next@16.4.5
+        version: next@16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -437,10 +440,10 @@ importers:
         version: 24.19.2
       better-auth:
         specifier: 'catalog:'
-        version: 1.7.16(next@16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
+        version: 1.7.16(next@16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1)))
       next:
         specifier: 'catalog:'
-        version: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       rolldown:
         specifier: 'catalog:'
         version: 1.2.16
@@ -501,7 +504,7 @@ importers:
         version: 24.19.2
       next:
         specifier: 'catalog:'
-        version: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       rolldown:
         specifier: 'catalog:'
         version: 1.2.16
@@ -616,7 +619,7 @@ importers:
     dependencies:
       '@next/routing':
         specifier: 'catalog:'
-        version: 16.4.5
+        version: 16.4.6
       '@stayingupwind/core':
         specifier: workspace:*
         version: link:../core
@@ -635,7 +638,7 @@ importers:
         version: 5.20261102.0-beta(@types/node@24.19.2)
       next:
         specifier: 'catalog:'
-        version: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       next-16-4-3:
         specifier: npm:next@16.4.3
         version: next@16.4.3(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
@@ -733,7 +736,7 @@ importers:
         version: 8.18.2
       next:
         specifier: 'catalog:'
-        version: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+        version: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
@@ -1394,8 +1397,11 @@ packages:
   '@next/env@16.4.5':
     resolution: {integrity: sha512-JwSPwpdkZL5VMl2jA/q+JI8MZdweAL3xmw5/tb9y/TLtmS0YXZnmYDzSihwk8xTj1OL+WM53gTqaj96yuLp6Xw==}
 
-  '@next/routing@16.4.5':
-    resolution: {integrity: sha512-5cR/AKkAr/WpfYKxdlDpOmxtNGo/4Ad+6Mr1aRzOzSb37jEM9Xffh3fSFyMlqFh/yiMw7ehbktZk41V2m6hZpQ==}
+  '@next/env@16.4.6':
+    resolution: {integrity: sha512-SunBjJ6t+oBtecS3dTjdVuMhUogP5wD/vrGL5EVuQYM1iS4O5ilL51HkiJ3sPjMzRHiCChvr4dbaSJbR7F3lxA==}
+
+  '@next/routing@16.4.6':
+    resolution: {integrity: sha512-25HxdlDhz37j9R50L1ULMtjzw3ybqQP4dQTr5L2FgEVD6y7LBAJrPmz1javAHj+gyKABb/FMWYPPkyU0xHsp5w==}
 
   '@next/swc-darwin-arm64@16.4.3':
     resolution: {integrity: sha512-4yq5EXBt+VDtAZwTyfijaFp5D2C5oz3Ikw5a2kiX2K9nw72vrZX2q5UuAlkPtUMO1tQz6JTKpaKWjS7OOefTDQ==}
@@ -1411,6 +1417,12 @@ packages:
 
   '@next/swc-darwin-arm64@16.4.5':
     resolution: {integrity: sha512-W5TniBzWKASbNNwHZ/S/f1MxQUXU/LdjklVMWA0Ujbfl7SZnUzFls45hO0i/sF7Bx1jJBWp7WWmoQajXtX/O8A==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@next/swc-darwin-arm64@16.4.6':
+    resolution: {integrity: sha512-kJ4VVZkley17xKaJx72QN2IBqjrj7zenCQZaUF0l9ShS/1Mt2kW4+Z5KGG6vgr3L/J562xTOizVyM1iA/u5nlg==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [darwin]
@@ -1433,6 +1445,12 @@ packages:
     cpu: [x64]
     os: [darwin]
 
+  '@next/swc-darwin-x64@16.4.6':
+    resolution: {integrity: sha512-eIPGZIqC+8JKaeZmvnCANJQF4xWkkHqSnAAajtFxgwDMAOnCgxNvP52SeWZ41PyVwoe+Le/NQuZSaQ8j7YshSA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [darwin]
+
   '@next/swc-linux-arm64-gnu@16.4.3':
     resolution: {integrity: sha512-dCKpXErGg3abUM6t5JTJV/ottVBTStJB5lRJTbgdUdQaQ+jNHiK56Hsc0YAEg/rinSh42hYG3HWiYmEMdilnxg==}
     engines: {node: '>= 10'}
@@ -1449,6 +1467,13 @@ packages:
 
   '@next/swc-linux-arm64-gnu@16.4.5':
     resolution: {integrity: sha512-FdRcyOx5u5P51mlAqLB9EXdd8jZO5fsdHtk4BAQSkqOywCsbTNN/rmw+jO7pnmjNdAtu2AG46NzbCL2FPDrrgw==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@next/swc-linux-arm64-gnu@16.4.6':
+    resolution: {integrity: sha512-9nI6O8vvczH2D9ZNdMGqb/3NuT15T9ksOZnAmx9/gjF2cOi74+xxyf1Hk96uIMfm14c9y6wHeBq6SH8g6udvcA==}
     engines: {node: '>= 10'}
     cpu: [arm64]
     os: [linux]
@@ -1475,6 +1500,13 @@ packages:
     os: [linux]
     libc: [musl]
 
+  '@next/swc-linux-arm64-musl@16.4.6':
+    resolution: {integrity: sha512-7/qPhTxDp2ScluOJOhLuhWmlA17o1yZ0SIgpISBCpBxXgtnK4+KGywBpFkfLPiU1rnSM1faFGzYkH6i7JdTrqA==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
   '@next/swc-linux-x64-gnu@16.4.3':
     resolution: {integrity: sha512-QymWvfUwDEC5/lpJOsxX5VAbyoR2D13+2Jsjz4be7gT4LPqEgdpkeLIR/HFfCLgKzoMhpJbp6I/JnogyNZHcaA==}
     engines: {node: '>= 10'}
@@ -1491,6 +1523,13 @@ packages:
 
   '@next/swc-linux-x64-gnu@16.4.5':
     resolution: {integrity: sha512-hPc+Fl+N22DAvqZHq559NmamXboOX5Lu8I5Wl0DezfrhTk1Zz21NQeYoZDmNI/NjTcrdsVxM72Fzn2lI+Q+vAw==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@next/swc-linux-x64-gnu@16.4.6':
+    resolution: {integrity: sha512-oOpbNa8XOW1qCGd9VvzC4fbkkRxEls7/WI6tz+YHC0xRA7KpV1U7DrAnCPjzVyOk/karzWEepCOcTIDmwK8FwQ==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [linux]
@@ -1517,6 +1556,13 @@ packages:
     os: [linux]
     libc: [musl]
 
+  '@next/swc-linux-x64-musl@16.4.6':
+    resolution: {integrity: sha512-aM8CZ+OR2EwXaAYw7KGkW2GDmNDsLBIRe1MMRZCJPTdw/xhTD0IMUVO4sf3KqrzuRouGzwwLZn34+gFeVXiUQA==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
   '@next/swc-win32-arm64-msvc@16.4.3':
     resolution: {integrity: sha512-lG1pPdPLk7gTyGb00n5JIMLdBJgjb+UEhSdZvFbhUMg0DyC6z4B7RnpSKF9VCd4imkLObVbXOFA0kFCpw7yFow==}
     engines: {node: '>= 10'}
@@ -1535,6 +1581,12 @@ packages:
     cpu: [arm64]
     os: [win32]
 
+  '@next/swc-win32-arm64-msvc@16.4.6':
+    resolution: {integrity: sha512-U0p7/tEtqvHX2crhd841CDwKtp5CFkKXVjOhmfccR3Pvp64sj8KBwRqsvltqLOwVBbj0NtkxwXSDpEHYGbxeXQ==}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+
   '@next/swc-win32-x64-msvc@16.4.3':
     resolution: {integrity: sha512-NmQC9RkJdnPXRaMxtkCzobB3teVjqF33oSOnwDfi+XYGWWYpt+xlGK3mtktSKLbdjwaWbJu2OkkMiRFGUUncKg==}
     engines: {node: '>= 10'}
@@ -1549,6 +1601,12 @@ packages:
 
   '@next/swc-win32-x64-msvc@16.4.5':
     resolution: {integrity: sha512-qNZj66pYXnaWLiF9R9GUbfBdrCv7kC6TaZfIwB2KH5WPc/8pEM3nVOj8hpQhWJU8S94rlH5MPDcX15+RrgUhiw==}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [win32]
+
+  '@next/swc-win32-x64-msvc@16.4.6':
+    resolution: {integrity: sha512-3ZG15/5WIdlTQsIEvc9sPTTSL5XFrlLklIKmfF4fwsDnoAhu6NcBDXsk3mbGxNyo6aVLEGex+fHCv2MahY7a9g==}
     engines: {node: '>= 10'}
     cpu: [x64]
     os: [win32]
@@ -3294,6 +3352,27 @@ packages:
       sass:
         optional: true
 
+  next@16.4.6:
+    resolution: {integrity: sha512-QZJiYhaZLJMo2KpkQGQIwvmd79WVsAWeYIU554a8d7zArS3si/IRy3lBNV/rtYhE70oLwdLYhPAXLPx8HwcwtA==}
+    engines: {node: '>=20.9.0'}
+    hasBin: true
+    peerDependencies:
+      '@opentelemetry/api': 1.9.1
+      '@playwright/test': ^1.51.1
+      babel-plugin-react-compiler: '*'
+      react: ^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0
+      react-dom: ^18.2.0 || 19.0.0-rc-de68d2f4-20241204 || ^19.0.0
+      sass: ^1.3.0
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+      '@playwright/test':
+        optional: true
+      babel-plugin-react-compiler:
+        optional: true
+      sass:
+        optional: true
+
   node-releases@2.0.60:
     resolution: {integrity: sha512-OmO8+GM1JUZqXET720VrJCwkjUCXmCMQm0Z3UDDRbfNLHS4NEAvY60j5jiFv0tkKw2PNNlqOLhahVmwJIOLDIQ==}
     engines: {node: '>=18'}
@@ -4235,7 +4314,9 @@ snapshots:
 
   '@next/env@16.4.5': {}
 
-  '@next/routing@16.4.5': {}
+  '@next/env@16.4.6': {}
+
+  '@next/routing@16.4.6': {}
 
   '@next/swc-darwin-arm64@16.4.3':
     optional: true
@@ -4244,6 +4325,9 @@ snapshots:
     optional: true
 
   '@next/swc-darwin-arm64@16.4.5':
+    optional: true
+
+  '@next/swc-darwin-arm64@16.4.6':
     optional: true
 
   '@next/swc-darwin-x64@16.4.3':
@@ -4255,6 +4339,9 @@ snapshots:
   '@next/swc-darwin-x64@16.4.5':
     optional: true
 
+  '@next/swc-darwin-x64@16.4.6':
+    optional: true
+
   '@next/swc-linux-arm64-gnu@16.4.3':
     optional: true
 
@@ -4262,6 +4349,9 @@ snapshots:
     optional: true
 
   '@next/swc-linux-arm64-gnu@16.4.5':
+    optional: true
+
+  '@next/swc-linux-arm64-gnu@16.4.6':
     optional: true
 
   '@next/swc-linux-arm64-musl@16.4.3':
@@ -4273,6 +4363,9 @@ snapshots:
   '@next/swc-linux-arm64-musl@16.4.5':
     optional: true
 
+  '@next/swc-linux-arm64-musl@16.4.6':
+    optional: true
+
   '@next/swc-linux-x64-gnu@16.4.3':
     optional: true
 
@@ -4280,6 +4373,9 @@ snapshots:
     optional: true
 
   '@next/swc-linux-x64-gnu@16.4.5':
+    optional: true
+
+  '@next/swc-linux-x64-gnu@16.4.6':
     optional: true
 
   '@next/swc-linux-x64-musl@16.4.3':
@@ -4291,6 +4387,9 @@ snapshots:
   '@next/swc-linux-x64-musl@16.4.5':
     optional: true
 
+  '@next/swc-linux-x64-musl@16.4.6':
+    optional: true
+
   '@next/swc-win32-arm64-msvc@16.4.3':
     optional: true
 
@@ -4300,6 +4399,9 @@ snapshots:
   '@next/swc-win32-arm64-msvc@16.4.5':
     optional: true
 
+  '@next/swc-win32-arm64-msvc@16.4.6':
+    optional: true
+
   '@next/swc-win32-x64-msvc@16.4.3':
     optional: true
 
@@ -4307,6 +4409,9 @@ snapshots:
     optional: true
 
   '@next/swc-win32-x64-msvc@16.4.5':
+    optional: true
+
+  '@next/swc-win32-x64-msvc@16.4.6':
     optional: true
 
   '@noble/ciphers@2.4.0': {}
@@ -4927,7 +5032,7 @@ snapshots:
 
   baseline-browser-mapping@2.11.32: {}
 
-  better-auth@1.7.16(next@16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))):
+  better-auth@1.7.16(next@16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react-dom@19.3.1(react@19.3.1))(react@19.3.1)(vitest@5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))):
     dependencies:
       '@better-auth/core': 1.7.16(@better-auth/utils@0.5.1)(@better-fetch/fetch@1.3.3)(better-call@1.4.5(zod@4.6.7))(jose@6.2.13)(kysely@0.29.7)(nanostores@1.5.5)
       '@better-auth/drizzle-adapter': 1.7.16(@better-auth/core@1.7.16(@better-auth/utils@0.5.1)(@better-fetch/fetch@1.3.3)(better-call@1.4.5(zod@4.6.7))(jose@6.2.13)(kysely@0.29.7)(nanostores@1.5.5))(@better-auth/utils@0.5.1)
@@ -4947,7 +5052,7 @@ snapshots:
       nanostores: 1.5.5
       zod: 4.6.7
     optionalDependencies:
-      next: 16.4.5(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      next: 16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
       react: 19.3.1
       react-dom: 19.3.1(react@19.3.1)
       vitest: 5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
@@ -5787,6 +5892,31 @@ snapshots:
       '@next/swc-linux-x64-musl': 16.4.5
       '@next/swc-win32-arm64-msvc': 16.4.5
       '@next/swc-win32-x64-msvc': 16.4.5
+      sharp: 0.35.5(@types/node@24.19.2)
+    transitivePeerDependencies:
+      - '@babel/core'
+      - '@types/node'
+      - babel-plugin-macros
+
+  next@16.4.6(@types/node@24.19.2)(react-dom@19.3.1(react@19.3.1))(react@19.3.1):
+    dependencies:
+      '@next/env': 16.4.6
+      '@swc/helpers': 0.5.23
+      baseline-browser-mapping: 2.11.32
+      caniuse-lite: 1.0.30001819
+      postcss: 8.5.23
+      react: 19.3.1
+      react-dom: 19.3.1(react@19.3.1)
+      styled-jsx: 5.1.6(react@19.3.1)
+    optionalDependencies:
+      '@next/swc-darwin-arm64': 16.4.6
+      '@next/swc-darwin-x64': 16.4.6
+      '@next/swc-linux-arm64-gnu': 16.4.6
+      '@next/swc-linux-arm64-musl': 16.4.6
+      '@next/swc-linux-x64-gnu': 16.4.6
+      '@next/swc-linux-x64-musl': 16.4.6
+      '@next/swc-win32-arm64-msvc': 16.4.6
+      '@next/swc-win32-x64-msvc': 16.4.6
       sharp: 0.35.5(@types/node@24.19.2)
     transitivePeerDependencies:
       - '@babel/core'

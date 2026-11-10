@@ -32,7 +32,7 @@ const VERSIONS = {
   '@types/node': '^24.19.2',
   '@types/react': '^19.3.0',
   '@types/react-dom': '^19.3.0',
-  next: '^16.4.5',
+  next: '^16.4.6',
   react: '^19.3.1',
   'react-dom': '^19.3.1',
   tailwindcss: '^4.3.3',

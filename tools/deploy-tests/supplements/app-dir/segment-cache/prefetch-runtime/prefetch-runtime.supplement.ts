@@ -2,7 +2,7 @@
 // Copyright (c) 2025 Vercel, Inc.
 //
 // From test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts
-// at 4e5335a00314be7fbb2aace5e9be56a88e64e5a8 (v16.4.5).
+// at 54b876b6b161b0ecda19562eb264bec637e60d6d (v16.4.6).
 //
 // Run by upwind's deploy tests among what Next.js skips in deploy mode
 // (tools/deploy-tests/README.md).
