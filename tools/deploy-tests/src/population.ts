@@ -106,9 +106,9 @@ export interface Supplement {
  * cases are as they were at 16.4.4, but for what 16.4.5 adds: avif-svg-signature-confusion, a suite of
  * its own, and cases beside those copied in app-root-params-getters and
  * partial-fallback-shell-upgrade. 16.4.6 leaves every copied suite's directory as 16.4.5 has it: each
- * `tree` below is the same at both.
+ * `tree` below is the same at both, so the copies can move with the supported release when it does.
  */
-const NEXT_16_4_6 = { version: '16.4.6', commit: '54b876b6b161b0ecda19562eb264bec637e60d6d' };
+const NEXT_16_4_5 = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
 
 /**
  * The copies, by upstream suite: of the cases Next.js's suites register otherwise or not at all when
@@ -119,7 +119,7 @@ const NEXT_16_4_6 = { version: '16.4.6', commit: '54b876b6b161b0ecda19562eb264be
  */
 export const SUPPLEMENTS: readonly Supplement[] = [
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-middleware/app-middleware.test.ts',
     tree: '10b3eddb8636de56dadd428c59a3b8dd1147ebdf',
     source: 'app-dir/app-middleware/app-middleware.supplement.ts',
@@ -127,7 +127,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with middleware should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-middleware-proxy/app-middleware-proxy.test.ts',
     tree: 'c19f21219de2239b1526e7e60567225e10d74e92',
     source: 'app-dir/app-middleware-proxy/app-middleware-proxy.supplement.ts',
@@ -135,7 +135,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['app-dir with proxy should not incorrectly treat a Location header as a rewrite'],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/cached-navigations/cached-navigations.test.ts',
     tree: '4bdb98dbdbff15d86d6ce67a40aea256e4436e42',
     source: 'app-dir/segment-cache/cached-navigations/cached-navigations.supplement.ts',
@@ -146,7 +146,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/not-found-non-document/not-found-non-document.test.ts',
     tree: 'd856230a3ffe36d621dd888731d0ed0ca67018cd',
     source: 'app-dir/not-found-non-document/not-found-non-document.supplement.ts',
@@ -157,7 +157,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/use-cache-route-handler-only/use-cache-route-handler-only.test.ts',
     tree: 'e740f6698efd3716d22e8e353b44fe02a1e1bd0b',
     source: 'app-dir/use-cache-route-handler-only/use-cache-route-handler-only.supplement.ts',
@@ -165,7 +165,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: ['use-cache-route-handler-only refreshes cached data after tag revalidation'],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/app-root-params-getters/use-cache.test.ts',
     tree: '211e8b949abad1d3e6bcea16aa0235bed9ded02b',
     source: 'app-dir/app-root-params-getters/use-cache.supplement.ts',
@@ -175,7 +175,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-runtime/prefetch-runtime.test.ts',
     tree: 'bc19b01fb3d8bfa2a6d2e0ddce693e940beb2ce2',
     source: 'app-dir/segment-cache/prefetch-runtime/prefetch-runtime.supplement.ts',
@@ -187,7 +187,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.test.ts',
     tree: '86d8a1a085c3b19f99c9eb8672204a4bd9c722ed',
     source: 'app-dir/segment-cache/prefetch-static-shell/prefetch-static-shell.supplement.ts',
@@ -197,7 +197,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream:
       'test/e2e/app-dir/cache-components-prerender-matrix/cache-components-prerender-matrix.test.ts',
     tree: 'c615f87fcbdbc5d61ab108aa64b38651d1ecfeab',
@@ -207,7 +207,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     cases: PRERENDER_MATRIX_CASES,
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream:
       'test/e2e/app-dir/partial-fallback-shell-upgrade/partial-fallback-shell-upgrade.test.ts',
     tree: 'bfd678e721b4221eb628a4283205870a6ffa0504',
@@ -220,7 +220,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/non-root-project-monorepo/non-root-project-monorepo.test.ts',
     tree: '46914e999bfa4ad3adda300884775b7deeab707f',
     source: 'app-dir/non-root-project-monorepo/non-root-project-monorepo.supplement.ts',
@@ -233,7 +233,7 @@ export const SUPPLEMENTS: readonly Supplement[] = [
     ],
   },
   {
-    next: NEXT_16_4_6,
+    next: NEXT_16_4_5,
     upstream: 'test/e2e/app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.test.ts',
     tree: 'f0fcc5b59fdfb76506585aa1738023b79f10f67c',
     source: 'app-dir/avif-svg-signature-confusion/avif-svg-signature-confusion.supplement.ts',
