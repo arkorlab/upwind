@@ -251,6 +251,30 @@ export function projectedLength(response: Response): number {
 }
 
 /**
+ * The answer's bytes, read whole once the isolate has room for them (`ReadBudget`): the room the
+ * artifact's copy holds, where it does, and room of the answer's own otherwise. One given up
+ * while it waits for room lets go of its body unread.
+ */
+export async function readWhole(
+  response: Response,
+  signal: AbortSignal,
+  room: ArtifactRoom,
+): Promise<Uint8Array> {
+  let release: () => void;
+  try {
+    release = await room.hold(projectedLength(response), signal);
+  } catch (error) {
+    releaseStream(response.body, 'an artifact read given up before its body');
+    throw error;
+  }
+  try {
+    return new Uint8Array(await response.arrayBuffer());
+  } finally {
+    release();
+  }
+}
+
+/**
  * The Function's artifact buffer, at most its shared 32 MiB room. Larger seeded or configured
  * uploads still deploy and stream elsewhere; this cache read misses. A native body takes one
  * BYOB read with a sentinel byte: capacity is charged up to the budget's ceiling, with one extra
