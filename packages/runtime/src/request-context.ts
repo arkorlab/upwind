@@ -110,6 +110,7 @@ function observeAnswer(scope: RequestScope): void {
   if (after === undefined || scope.answer === undefined) return;
   // eslint-disable-next-line unicorn/prefer-then-catch -- Both outcomes release background work without wrapping or changing the handler promise.
   void scope.answer.then(
+    // eslint-disable-next-line promise/always-return -- This observer only releases the latch; no transformed result is consumed.
     () => {
       after.resolve(undefined);
     },
