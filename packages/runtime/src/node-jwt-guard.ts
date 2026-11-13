@@ -348,7 +348,8 @@ function assertLoadState(
  * The fixed Node loader calls _compile immediately before executing CommonJS source.
  * Keep its source, receiver and arguments unchanged; no preload or evaluation retry.
  * The WS profile additionally requires both optional native loads to remain unresolved.
- * Reviewed Node 24.22.1 and 26.13.0: lib/internal/modules/cjs/loader.js and esm/translators.js.
+ * Reviewed Node 24.22.1, 24.22.3, 26.13.0 and 26.13.1:
+ * lib/internal/modules/cjs/loader.js and esm/translators.js.
  */
 function installPreparedGuards(
   serverUrl: string,
@@ -486,7 +487,7 @@ export function installNodeJwtGuards(
   if (nextHook === undefined && records.length === 0) return;
   if (installation.completed) fail('initialization guard already installed');
   if (!isGuardedNodeVersion(process.versions.node) || process.execArgv.length > 0)
-    fail('requires a fixed default Node 24.22.1 or 26.13.0 loader');
+    fail('requires a fixed default Node 24.22.1, 24.22.3, 26.13.0 or 26.13.1 loader');
   const captured = nodeInitializationBuiltins(createRequire(serverUrl));
   const hook =
     nextHook === undefined ? undefined : initializeNodeNextRequireHook(serverUrl, nextHook);

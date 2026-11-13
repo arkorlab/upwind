@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [24.22.1, 26.13.0]
+        node: [24.22.3, 26.13.1]
         next: ['16.4.3', '16.4.4', '16.4.5']
         include:
           - next: '16.4.3'

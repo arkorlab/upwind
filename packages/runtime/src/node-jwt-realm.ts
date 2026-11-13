@@ -402,7 +402,8 @@ function captureRealm(
   const processObject = requiredObject(process);
   const versions = requiredObject(data(processObject, 'versions'));
   const nodeVersion = data(versions, 'node');
-  if (!isGuardedNodeVersion(nodeVersion)) fail('requires Node 24.22.1 or 26.13.0');
+  if (!isGuardedNodeVersion(nodeVersion))
+    fail('requires Node 24.22.1, 24.22.3, 26.13.0 or 26.13.1');
   const version = `v${nodeVersion}`;
   const environment = data(processObject, 'env');
   if (!object(environment)) fail('missing Node environment');
