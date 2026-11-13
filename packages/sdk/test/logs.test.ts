@@ -26,6 +26,7 @@ describe('setLogContext', () => {
 
     expect(setLogContext({ userId: 'user-a' })).toBe(true);
     expect(setLogContext({ tenantId: 'tenant-b' })).toBe(true);
+
     // eslint-disable-next-line no-console -- verifies that the SDK did not install a console wrapper.
     console.log('ordinary application message');
 
@@ -49,9 +50,11 @@ describe('setLogContext', () => {
     const oversized = Object.fromEntries(
       Array.from({ length: 16 }, (_, index) => [String(index), '😀'.repeat(100)] as const),
     );
+
     for (const input of [null, { userId: 42 }, accessor, oversized]) {
       expect(setLogContext(input as LogContext)).toBe(false);
     }
+
     expect(log).not.toHaveBeenCalled();
     expect(getter).not.toHaveBeenCalled();
   });
@@ -60,6 +63,7 @@ describe('setLogContext', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {
       throw new Error('logging unavailable');
     });
+
     expect(setLogContext({ userId: 'usr_42' })).toBe(false);
   });
 });

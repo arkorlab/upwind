@@ -108,9 +108,15 @@ export function withRequestContext<T>(
 function observeAnswer(scope: RequestScope): void {
   const after = scope.after;
   if (after === undefined || scope.answer === undefined) return;
+  // eslint-disable-next-line unicorn/prefer-then-catch -- Both outcomes release background work without wrapping or changing the handler promise.
   void scope.answer.then(
-    () => after.resolve(undefined),
-    () => after.resolve(undefined),
+    // eslint-disable-next-line promise/always-return -- This observer only releases the latch; no transformed result is consumed.
+    () => {
+      after.resolve(undefined);
+    },
+    () => {
+      after.resolve(undefined);
+    },
   );
 }
 
@@ -133,12 +139,13 @@ export function afterResponse(task: () => void | Promise<void>): void {
   }
   const entry = requestEntry();
   const pending = scope.after.promise
-    .then(
-      () =>
-        new Promise<void>((resolve) => {
-          setTimeout(resolve, 0);
-        }),
-    )
+    // eslint-disable-next-line unicorn/prefer-await -- Retain the background timer handoff without awaiting it on the response path.
+    .then(() => {
+      return new Promise<void>((resolve) => {
+        setTimeout(resolve, 0);
+      });
+    })
+    // eslint-disable-next-line unicorn/prefer-await -- waitUntil owns task completion and rejection independently of the response.
     .then(() => (entry === undefined ? task() : entry(task)));
   try {
     scope.context.waitUntil(pending);
