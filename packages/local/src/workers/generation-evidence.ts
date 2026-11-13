@@ -43,19 +43,24 @@ interface HeldPack {
 
 interface GenerationMemory<V extends HeldPack> {
   get(key: string): V | undefined;
+  peek(key: string): V | undefined;
   set(key: string, value: V, bytes: number): unknown;
 }
 
-/** Observe actual memory hits and adoptions, preserving the cache's private receiver and values. */
+/**
+ * Observe actual memory hits and adoptions, preserving the cache's private receiver and values. A
+ * look that uses nothing (`peek`) is a hit all the same: the edge judges a request by the record it
+ * finds so — a page's payload it hands on for the resume its record holds (`payload-ahead.ts`).
+ */
 export function watchedGenerationMemory<V extends HeldPack, M extends GenerationMemory<V>>(
   memory: M,
   observed: (key: string, pack: DecodedGenerationPack) => void,
 ): M {
   return new Proxy(memory, {
     get(target, property): unknown {
-      if (property === 'get') {
+      if (property === 'get' || property === 'peek') {
         return (key: string): V | undefined => {
-          const held = target.get(key);
+          const held = property === 'get' ? target.get(key) : target.peek(key);
           if (held !== undefined) observed(key, held.pack);
           return held;
         };

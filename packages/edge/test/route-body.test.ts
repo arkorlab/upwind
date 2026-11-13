@@ -563,13 +563,14 @@ describe('the host serves complete route-body generations', () => {
 
       await expect(response.text()).resolves.toBe('Function');
       expect(get).not.toHaveBeenCalled();
-      expect(memory).not.toHaveBeenCalled();
+      // Read beside the middleware, from memory, and answered from nowhere once its veto stood.
+      expect(memory).toHaveBeenCalledTimes(1);
       expect(test.fallback).toHaveBeenCalledTimes(1);
       expect(test.dispatch).toHaveBeenCalledTimes(1);
     },
   );
 
-  it('rejects a middleware RSC segment request before reading the image record', async () => {
+  it('rejects a middleware RSC segment request, serving nothing of the record read beside it', async () => {
     const test = await fixture({
       middlewareHeaders: {
         'x-middleware-override-headers': 'rsc,next-router-segment-prefetch',
@@ -581,7 +582,11 @@ describe('the host serves complete route-body generations', () => {
     const response = await test.serve();
 
     await expect(response.text()).resolves.toBe('Function');
-    expect(memory).not.toHaveBeenCalled();
+    expect(memory).toHaveBeenCalledTimes(1);
+    expect(test.fallback).toHaveBeenCalledWith(
+      'route-body-unshareable',
+      expect.objectContaining({ kind: 'continue' }),
+    );
     expect(test.dispatch).toHaveBeenCalledTimes(1);
   });
 
@@ -676,11 +681,107 @@ describe('the host serves complete route-body generations', () => {
     });
     const response = await routed(test, test.manifest, { 'x-before': 'matched' });
 
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(REPLACEMENT);
     expect(response.headers.get('x-original-rule')).toBe('retained');
     expect(response.headers.get('cache-control')).toBe(PUBLIC_ANSWER);
     expect(test.dispatch).toHaveBeenCalledTimes(2);
 
     await test.drain();
+  });
+
+  it.each([
+    { name: 'a cookie', headers: { cookie: 'visitor=1' } },
+    { name: 'credentials', headers: { authorization: 'Bearer visitor' } },
+    { name: 'a private project', options: { privateDelivery: true } },
+    {
+      name: 'a conditioned rule',
+      headers: { 'x-visitor': 'yes' },
+      options: {
+        headerRules: [
+          {
+            sourceRegex: '^/icon$',
+            has: [{ type: 'header' as const, key: 'x-visitor', value: 'yes' }],
+            headers: { 'x-display': 'kept' },
+          },
+        ],
+      },
+    },
+    {
+      name: 'a rule setting a cookie',
+      options: { headerRules: [{ sourceRegex: '^/icon$', headers: { 'set-cookie': 'seen=1' } }] },
+    },
+    {
+      name: 'a rule refusing a shared cache',
+      options: {
+        headerRules: [{ sourceRegex: '^/icon$', headers: { 'cache-control': 'private' } }],
+      },
+    },
+  ])(
+    'runs the middleware for a body that $name makes the Function’s, reading no record beside it',
+    async ({
+      headers,
+      options,
+    }: {
+      headers?: Record<string, string>;
+      options?: Parameters<typeof fixture>[0];
+    }) => {
+      const test = await fixture({ middlewareHeaders: {}, ...options });
+      const get = vi.spyOn(env.CACHE_STATE, 'get');
+      const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+      const response = await test.serve(headers === undefined ? {} : { headers });
+
+      await expect(response.text()).resolves.toBe('Function');
+      // The middleware asked — it may rewrite onto a shipped file, the edge's to serve — and no
+      // record read beside it, which no answer would take.
+      expect(test.dispatch).toHaveBeenCalledTimes(1);
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.fallback).toHaveBeenCalledWith(
+        'route-body-unshareable',
+        expect.objectContaining({ kind: 'continue' }),
+      );
+      expect(get).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+    },
+  );
+
+  it('reads the body’s record beside its middleware, and serves the read it started', async () => {
+    const test = await fixture({ middlewareHeaders: {} });
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const decided = Promise.withResolvers<Response>();
+    const asked = Promise.withResolvers<true>();
+
+    test.dispatch.mockImplementationOnce(() => {
+      asked.resolve(true);
+      return decided.promise;
+    });
+
+    const pending = test.serve();
+    await asked.promise;
+
+    // The middleware has not answered, and the record is already read.
+    expect(memory).toHaveBeenCalledWith(test.key);
+
+    decided.resolve(new Response(null, { headers: { 'x-middleware-next': '1' } }));
+    const response = await pending;
+
+    expect(new Uint8Array(await response.arrayBuffer())).toStrictEqual(BODY);
+    expect(memory).toHaveBeenCalledTimes(1);
+    expect(test.fallback).not.toHaveBeenCalled();
+  });
+
+  it('lets the read begun beside the middleware finish behind an answer the middleware gave itself', async () => {
+    const test = await fixture({ authorizeByHeader: true });
+    const memory = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+    const response = await test.serve();
+
+    expect(response.status).toBe(403);
+    await expect(response.text()).resolves.toBe('Not allowed');
+    expect(memory).toHaveBeenCalledTimes(1);
+    // Left to the request's context to finish, into memory, rather than torn down with it.
+    await expect(Promise.all(test.tasks)).resolves.toContainEqual(
+      expect.objectContaining({ kind: 'generation' }),
+    );
+    expect(test.fallback).not.toHaveBeenCalled();
   });
 
   it('preserves original header rules during foreground body regeneration after middleware', async () => {
@@ -764,6 +865,36 @@ describe('the host serves complete route-body generations', () => {
       await test.drain();
     },
   );
+
+  it('serves a shipped file a body with credentials is rewritten to from storage (Codex)', async () => {
+    const path = '/_next/static/media/large.png';
+    const bytes = new Uint8Array(128 * 1024).fill(98);
+    const digest = await sha256Hex(bytes);
+    await env.ARTIFACTS.put(blobObjectKey(digest), bytes);
+    const test = await fixture({
+      middlewareHeaders: { 'x-middleware-rewrite': `https://site.example${path}` },
+    });
+    const manifest: ProjectManifest = {
+      ...test.manifest,
+      staticFiles: {
+        [path]: {
+          sha256: digest,
+          byteLength: bytes.byteLength,
+          contentType: 'image/png',
+          immutable: true,
+        },
+      },
+    };
+    const response = await routed(test, manifest, { authorization: 'Bearer visitor' });
+    const actual = new Uint8Array(await response.arrayBuffer());
+
+    // The Function need not carry the file: the middleware ran here, and the edge served it.
+    await expect(sha256Hex(actual)).resolves.toBe(digest);
+    expect(test.dispatch).toHaveBeenCalledTimes(1);
+    expect(test.fallback).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
 
   it.each(
     ['cdn-cache-control', 'cloudflare-cdn-cache-control', 'surrogate-control'].flatMap((header) =>
