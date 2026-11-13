@@ -1743,6 +1743,7 @@ describe('dynamicRouting', () => {
       for (const locale of ['en', 'ja']) {
         for (const suffix of ['', '.rsc', '.segments/_tree.segment.rsc']) {
           const url = new URL(`https://example.test${basePath}/${locale}/items/one${suffix}`);
+
           expect(functionFor(manifest, url, new Headers())).toBe('app-2');
           expect(functionFor(manifest, url, new Headers({ rsc: '1' }))).toBe('app-2');
         }
@@ -1785,11 +1786,13 @@ describe('dynamicRouting', () => {
       entrypoints: bundle.entrypoints.map((entry) =>
         entry.function === 'app-2' ? { ...entry, id } : entry,
       ),
-      prerenders: bundle.prerenders.map((prerender) => ({
-        ...prerender,
-        route: id,
-        parentOutputId: id,
-      })),
+      prerenders: bundle.prerenders.map((prerender) => {
+        return {
+          ...prerender,
+          route: id,
+          parentOutputId: id,
+        };
+      }),
     });
 
     expect(functionFor(manifest, new URL('https://example.test/ja/items/one'), new Headers())).toBe(
