@@ -57,6 +57,7 @@ const config: KnipConfig = {
       entry: [
         'src/{index,db,kv,blob,durable-object,ai,service,websocket}.ts',
         'scripts/check-ai-types.ts',
+        'test/consumer-types/logs.ts',
         'test/consumer-types/service.ts',
         'test/consumer-types/websocket.ts',
       ],
