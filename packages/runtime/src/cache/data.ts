@@ -107,28 +107,37 @@ export async function readData(runtime: CacheRuntime, request: DataReadRequest):
 }
 
 /**
- * How long a read waits for a value later than the one it judged stale, past that read. It answers
- * with the stale value otherwise, at once, as Next.js answers one and revalidates it behind the
- * render: so it waits no longer than a host's read nearby takes.
+ * How long a read waits for a value later than the one it judged stale, past that read: for all it
+ * asks there together — the later value, its judgement, the one past it, and what the isolate holds
+ * of the key where a write overtook them (`laterIfAny`) — not for each. It answers with the stale
+ * value otherwise, at once, as Next.js answers one and revalidates it behind the render: so it
+ * waits no longer than a host's read nearby takes. Given to each step on its own, the steps came to
+ * some 800 ms in front of the render past a stale value — before the first byte, where a page has
+ * no shell to send first — while a read of a value the host keeps far off can spend all of it alone.
  */
-const NEWER_DATA_DEADLINE_MS = 200;
+export const NEWER_DATA_DEADLINE_MS = 200;
 
 /**
- * How long a read waits for a value later than the one it judged expired, past that read. It
- * computes the value again otherwise, in front of the render, which as a rule takes longer; and
- * what it computes is written over the later value another isolate wrote, so that the renders after
- * it can answer with values that differ. A host can keep that value in another region than the one
- * it reads from, and a read that crosses to it took 160–360 ms in deploy-tests runs, which the
- * stale read's wait cut short.
+ * How long a read waits for a value later than the one it judged expired, past that read, all it
+ * asks there together, as `NEWER_DATA_DEADLINE_MS` is past a stale one: some 1.4 s given to each
+ * step on its own — 500 ms for each of the two reads, 200 ms for each of their judgements. It computes the value again otherwise, in front of the render, which as a rule
+ * takes longer; and what it computes is written over the later value another isolate wrote, so that
+ * the renders after it can answer with values that differ. A host can keep that value in another
+ * region than the one it reads from, and a read that crosses to it took 160–360 ms in deploy-tests
+ * runs, which the stale read's wait cut short.
  */
-const EXPIRED_NEWER_DATA_DEADLINE_MS = 500;
+export const EXPIRED_NEWER_DATA_DEADLINE_MS = 500;
 
 /** How a later value is asked for (`readNewerData`). */
 export interface LaterAsk {
   /** Past one already taken: the key's floor moves only once the later value is kept. */
   readonly probing?: boolean;
-  /** Past a value the read judged expired, not stale: it is waited for longer. */
-  readonly expired?: boolean;
+  /**
+   * When the read that asks stops waiting, on the isolate's own clock (`performance.now()`): the
+   * one deadline of everything it asks past the value it judged (`laterIfAny`), of which this is
+   * what is left. `NEWER_DATA_DEADLINE_MS` from now where none is given.
+   */
+  readonly until?: number;
 }
 
 /** A value later than the one a read judged, read whole, and how to keep it once it is taken. */
@@ -146,24 +155,26 @@ export interface LaterData {
 
 /**
  * A value of the key later than the one at `than`, where the host keeps one nearer than its read
- * (`getNewerData`), read whole — its bytes too, where they are stored apart — within
- * `NEWER_DATA_DEADLINE_MS`, or `EXPIRED_NEWER_DATA_DEADLINE_MS` past an expired value: `undefined`
- * for none, none in time, a read that failed, or a host without any. Never rejects, and remembers
- * nothing until the caller takes it (`keep`): a host whose reads are cached answers with the value
- * a later write replaced for as long as its cache keeps it, and a read that judged that value stale
- * or expired would compute again what another isolate has already written — where the later one
- * stands no worse. A probe (`probing`) — a value asked for past one already taken — raises the
- * key's floor only once it is kept: one that cannot be read whole, or is not taken, leaves the one
- * taken before it to be kept.
+ * (`getNewerData`), read whole — its bytes too, where they are stored apart — by `until`:
+ * `undefined` for none, none in time, a read that failed, or a host without any; and nothing asked
+ * once `until` has gone by, as no read waits for the answer then. What the host answers after that
+ * is its own to keep — `getNewerData` keeps it going behind the response — and the runtime's wait
+ * calls nothing off. Never rejects, and remembers nothing until the caller takes it (`keep`): a host
+ * whose reads are cached answers with the value a later write replaced for as long as its cache
+ * keeps it, and a read that judged that value stale or expired would compute again what another
+ * isolate has already written — where the later one stands no worse. A probe (`probing`) — a value
+ * asked for past one already taken — raises the key's floor only once it is kept: one that cannot
+ * be read whole, or is not taken, leaves the one taken before it to be kept.
  */
 export async function readNewerData(
   runtime: CacheRuntime,
   request: DataReadRequest,
   than: number,
-  { probing = false, expired = false }: LaterAsk = {},
+  { probing = false, until = performance.now() + NEWER_DATA_DEADLINE_MS }: LaterAsk = {},
 ): Promise<LaterData | undefined> {
   const { host } = runtime;
-  if (host.getNewerData === undefined) {
+  const remaining = until - performance.now();
+  if (host.getNewerData === undefined || remaining <= 0) {
     return undefined;
   }
   const key = keyOf(request);
@@ -187,8 +198,7 @@ export async function readNewerData(
   };
   let memo: LaterData['memo'] | undefined;
   try {
-    const deadlineMs = expired ? EXPIRED_NEWER_DATA_DEADLINE_MS : NEWER_DATA_DEADLINE_MS;
-    memo = await withDeadline(read(), deadlineMs, 'a later data value');
+    memo = await withDeadline(read(), remaining, 'a later data value');
   } catch (error) {
     runtime.log('later data value not read', {
       detail: error instanceof Error ? error.message : String(error),
