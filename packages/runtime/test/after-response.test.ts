@@ -73,6 +73,7 @@ describe('background work registered after the response', () => {
     expect(vi.getTimerCount()).toBe(0);
 
     answer.resolve('answered');
+
     await expect(response).resolves.toBe('answered');
   });
 
@@ -95,12 +96,17 @@ describe('background work registered after the response', () => {
 
     const expected = new Response('ready');
     answer.resolve(expected);
+
     await expect(response).resolves.toBe(expected);
+
     order.push('response');
+
     expect(order).toStrictEqual(['response']);
 
     await vi.runAllTimersAsync();
+
     expect(order).toStrictEqual(['response', 'task']);
+
     task.resolve(undefined);
     await Promise.all(kept);
   });
@@ -121,11 +127,13 @@ describe('background work registered after the response', () => {
     });
 
     await expect(response).resolves.toBe(expected);
+
     await vi.runAllTimersAsync();
     await Promise.all(kept);
 
     expect(task).toHaveBeenCalledTimes(1);
     expect(expected.bodyUsed).toBe(false);
+
     controller?.close();
   });
 
@@ -137,30 +145,38 @@ describe('background work registered after the response', () => {
     const firstAnswer = Promise.withResolvers<string>();
     const secondAnswer = Promise.withResolvers<string>();
     const seen: { url: string | undefined; render: string | undefined }[] = [];
-    const run = (context: VercelRequestContext, answer: Promise<string>): Promise<string> =>
-      withRequestContext(context, () =>
-        render.run(context.url, async () => {
+    const run = (context: VercelRequestContext, answer: Promise<string>): Promise<string> => {
+      return withRequestContext(context, () => {
+        return render.run(context.url, async () => {
           await register.promise;
           currentContext()?.afterResponse?.(async () => {
             await Promise.resolve();
             seen.push({ url: currentContext()?.url, render: render.getStore() });
           });
           return answer;
-        }),
-      );
+        });
+      });
+    };
     const one = run(first.context, firstAnswer.promise);
     const two = run(second.context, secondAnswer.promise);
 
     register.resolve(undefined);
     secondAnswer.resolve('second');
+
     await expect(two).resolves.toBe('second');
+
     await vi.runAllTimersAsync();
+
     expect(seen).toStrictEqual([{ url: second.context.url, render: undefined }]);
 
     firstAnswer.resolve('first');
+
     await expect(one).resolves.toBe('first');
+
     await vi.runAllTimersAsync();
+    // eslint-disable-next-line unicorn/prefer-iterator-concat -- This suite's ES2024 declarations do not expose Iterator.concat.
     await Promise.all([...first.kept, ...second.kept]);
+
     expect(seen).toStrictEqual([
       { url: second.context.url, render: undefined },
       { url: first.context.url, render: undefined },
@@ -182,6 +198,7 @@ describe('background work registered after the response', () => {
     });
 
     await expect(response).resolves.toBe('answered');
+
     late.resolve(undefined);
     await vi.runAllTimersAsync();
     await Promise.all(kept);
@@ -195,15 +212,16 @@ describe('background work registered after the response', () => {
     const failure = new Error('handler failed');
     const task = vi.fn();
 
-    expect(() =>
-      withRequestContext(context, () => {
+    expect(() => {
+      return withRequestContext(context, () => {
         afterResponse(task);
         throw failure;
-      }),
-    ).toThrow(failure);
+      });
+    }).toThrow(failure);
 
     await vi.runAllTimersAsync();
     await Promise.all(kept);
+
     expect(task).toHaveBeenCalledTimes(1);
   });
 
@@ -217,8 +235,10 @@ describe('background work registered after the response', () => {
     });
 
     await expect(response).rejects.toBe(failure);
+
     await vi.runAllTimersAsync();
     await Promise.all(kept);
+
     expect(task).toHaveBeenCalledTimes(1);
   });
 
@@ -235,7 +255,9 @@ describe('background work registered after the response', () => {
     });
 
     await expect(response).resolves.toBe('answered');
+
     await vi.runAllTimersAsync();
+
     await expect(Promise.allSettled(kept)).resolves.toStrictEqual([
       { status: 'rejected', reason: synchronous },
       { status: 'rejected', reason: asynchronous },
@@ -260,7 +282,9 @@ describe('background work registered after the response', () => {
     });
 
     await expect(response).resolves.toBe('answered');
+
     await vi.runAllTimersAsync();
+
     expect(task).toHaveBeenCalledTimes(1);
   });
 });

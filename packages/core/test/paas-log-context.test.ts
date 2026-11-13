@@ -19,10 +19,12 @@ describe('runtime log context protocol', () => {
       tenantId: 'tenant_7',
       constructor: 'constructor-id',
     });
-    Object.defineProperty(context, '__proto__', { enumerable: true, value: 'prototype-id' });
-    Object.defineProperty(context, 'hidden', { value: 'ignored' });
+    Object.defineProperties(context, {
+      ['__proto__']: { enumerable: true, value: 'prototype-id' },
+      hidden: { value: 'ignored' },
+    });
     const envelope = logContextEnvelope(context);
-    context['userId'] = 'changed';
+    context.userId = 'changed';
 
     expect(envelope?.message).toBe(LOG_CONTEXT_MESSAGE);
     expect(envelope?.__upwindLogContext).toBe(1);
@@ -33,8 +35,10 @@ describe('runtime log context protocol', () => {
       ['__proto__', 'prototype-id'],
     ]);
     expect(Object.getPrototypeOf(envelope?.context)).toBeNull();
+
     const serialized = JSON.stringify(envelope);
     const transmitted: unknown = JSON.parse(serialized);
+
     expect(readLogContext(transmitted)).toStrictEqual(envelope?.context);
   });
 
@@ -42,14 +46,19 @@ describe('runtime log context protocol', () => {
     const context = Object.fromEntries(
       Array.from({ length: 16 }, (_, index) => [String(index), 'value'] as const),
     );
+
     expect(logContextEnvelope(context)).toBeDefined();
     expect(logContextEnvelope({ ['k'.repeat(64)]: 'v'.repeat(200) })).toBeDefined();
+
     const identifiers = readLogContext(marker({ ' user ': ' value ', empty: '' }));
+
     expect(Object.entries(identifiers ?? {})).toStrictEqual([
       [' user ', ' value '],
       ['empty', ''],
     ]);
+
     const empty = readLogContext(marker({}));
+
     expect(empty).toBeDefined();
     expect(Object.entries(empty ?? {})).toStrictEqual([]);
   });
@@ -59,6 +68,7 @@ describe('runtime log context protocol', () => {
     undefined,
     'user-id',
     [],
+    // eslint-disable-next-line unicorn/prefer-temporal -- Date is intentionally a rejected class instance.
     new Date(0),
     { '': 'empty-key' },
     { ['k'.repeat(65)]: 'value' },
@@ -92,6 +102,7 @@ describe('runtime log context protocol', () => {
       expect(logContextEnvelope(context)).toBeUndefined();
       expect(readLogContext(marker(context))).toBeUndefined();
     }
+
     expect(getter).not.toHaveBeenCalled();
     expect(toJSON).not.toHaveBeenCalled();
   });
@@ -107,15 +118,22 @@ describe('runtime log context protocol', () => {
     context[finalKey] = '';
     const encoder = new TextEncoder();
     const room = MAX_LOG_CONTEXT_BYTES - encoder.encode(JSON.stringify(marker(context))).byteLength;
+
     expect(room).toBeGreaterThan(0);
     expect(room).toBeLessThan(200);
+
     context[finalKey] = 'v'.repeat(room);
 
     const serialized = JSON.stringify(marker(context));
+
     expect(encoder.encode(serialized).byteLength).toBe(MAX_LOG_CONTEXT_BYTES);
+
     const read = readLogContext(marker(context));
+
     expect(Object.entries(read ?? {})).toStrictEqual(Object.entries(context));
+
     context[finalKey] += 'v';
+
     expect(logContextEnvelope(context)).toBeUndefined();
 
     const unicode = Object.fromEntries(
@@ -124,6 +142,7 @@ describe('runtime log context protocol', () => {
     const escaped = Object.fromEntries(
       Array.from({ length: 16 }, (_, index) => [String(index), '\n'.repeat(200)] as const),
     );
+
     expect(logContextEnvelope(unicode)).toBeUndefined();
     expect(logContextEnvelope(escaped)).toBeUndefined();
   });
@@ -142,7 +161,9 @@ describe('runtime log context protocol', () => {
       Object.create(marker({ userId: 'inherited' })),
       accessor,
     ];
+
     for (const envelope of malformed) expect(readLogContext(envelope)).toBeUndefined();
+
     expect(getter).not.toHaveBeenCalled();
   });
 });
@@ -150,6 +171,7 @@ describe('runtime log context protocol', () => {
 describe('log correlation IDs', () => {
   it('accepts canonical UUID v4 values and rejects other IDs', () => {
     expect(isLogCorrelationId('46bd0e48-cbd8-4b3c-8e34-02d1bc66f1c2')).toBe(true);
+
     for (const value of [
       undefined,
       null,
