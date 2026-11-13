@@ -23,12 +23,14 @@ import {
   travelsWithFunction,
 } from '../src/bundle/static-files.ts';
 import { foldedHeadersFor, headerRulesFor, isReserved } from '../src/manifest/dynamic.ts';
+import { functionFor } from '../src/manifest/functions.ts';
 import {
   buildProjectManifest,
   findStaticFile,
   parseProjectManifest,
   serializeManifest,
 } from '../src/manifest/manifest.ts';
+import type { ProjectManifest } from '../src/manifest/schema.ts';
 import { classifyStaticFile } from '../src/request/classify.ts';
 import { filterShellResponseHeaders } from '../src/request/headers.ts';
 import {
@@ -1589,6 +1591,81 @@ describe('header parameter captures', () => {
   });
 });
 
+/** A source page with the locale fixed in its fallback shells, as in a partial prerender. */
+function partialFunctionBundle(basePath: string, collapsed: boolean): DeploymentBundle {
+  const bundle = fixtureBundle({ basePath });
+  const source = `${basePath}/[locale]/items/[id]`;
+  const locales = ['en', 'ja'];
+  const suffix = String.raw`(\.rsc|\.segments/.+\.segment\.rsc|)(?:/)?$`;
+  const dataSuffix = String.raw`(\.rsc|\.segments/.+\.segment\.rsc)(?:/)?$`;
+  const dynamicRoutes: Route[] = collapsed
+    ? [
+        {
+          source: '/$1/items/[id]',
+          sourceRegex: `^${basePath}[/]?/(en|ja)/items/(?<nxtPid>[^/]+?)${suffix}`,
+          destination: `${basePath}/$1/items/[id]$3?nxtPid=$nxtPid`,
+        },
+      ]
+    : locales.flatMap((locale) => {
+        const page = `${basePath}/${locale}/items/[id]`;
+        const pattern = `^${basePath}[/]?/${locale}/items/(?<nxtPid>[^/]+?)`;
+        return [
+          { sourceRegex: `${pattern}${dataSuffix}`, destination: `${page}$2?nxtPid=$nxtPid` },
+          { sourceRegex: `${pattern}(?:/)?$`, destination: `${page}?nxtPid=$nxtPid` },
+        ];
+      });
+  return {
+    ...bundle,
+    v: 2,
+    entrypoints: [
+      { id: source, pathname: source, kind: 'app-page', function: 'app-2' },
+      {
+        id: `${basePath}/other/[id]`,
+        pathname: `${basePath}/other/[id]`,
+        kind: 'app-page',
+        function: 'app-3',
+      },
+    ],
+    prerenders: locales.map((locale, index): Prerender => {
+      const pathname = `${basePath}/${locale}/items/[id]`;
+      return {
+        ...rootPrerender(),
+        id: pathname,
+        pathname,
+        route: source,
+        parentOutputId: source,
+        groupId: index + 1,
+        routeType: 'fallback',
+      };
+    }),
+    routing: { ...bundle.routing, dynamicRoutes },
+    functions: {
+      ...bundle.functions,
+      split: { 'app-2': bundle.functions.app, 'app-3': bundle.functions.app },
+    },
+  };
+}
+
+/** No shell lookup helps a passthrough choose its Function; only the published routing does. */
+function functionManifest(bundle: DeploymentBundle): ProjectManifest {
+  return buildProjectManifest({
+    projectId: 'project',
+    runId: 'run',
+    generatedAt: bundle.generatedAt,
+    originHost: 'example.test',
+    deployment: { assetSetHash: 'assets', observedAt: bundle.generatedAt },
+    app: {
+      deploymentId: bundle.deploymentId,
+      scriptName: 'app-primary',
+      ...(bundle.functions.split !== undefined && {
+        functions: { 'app-2': 'app-second', 'app-3': 'app-third' },
+      }),
+    },
+    routes: [],
+    ...dynamicRouting(bundle, new Set()),
+  });
+}
+
 describe('dynamicRouting', () => {
   it('names the class a dynamic route resolves to when it has a shell, and the exact pathnames without one', () => {
     const routing = dynamicRouting(fixtureBundle(), new Set(['/', '/items/[id]']));
@@ -1651,6 +1728,171 @@ describe('dynamicRouting', () => {
       { sourceRegex: '^/app/_next/' },
     ]);
     expect(dynamicRouting(fixtureBundle(), new Set()).reservedRoutes).toStrictEqual([]);
+  });
+
+  it.each([
+    { basePath: '', collapsed: false },
+    { basePath: '', collapsed: true },
+    { basePath: '/app', collapsed: false },
+    { basePath: '/app', collapsed: true },
+  ])(
+    'sends partially resolved pages and their data to their Function ($basePath, collapsed=$collapsed)',
+    ({ basePath, collapsed }) => {
+      const manifest = functionManifest(partialFunctionBundle(basePath, collapsed));
+
+      for (const locale of ['en', 'ja']) {
+        for (const suffix of ['', '.rsc', '.segments/_tree.segment.rsc']) {
+          const url = new URL(`https://example.test${basePath}/${locale}/items/one${suffix}`);
+
+          expect(functionFor(manifest, url, new Headers())).toBe('app-2');
+          expect(functionFor(manifest, url, new Headers({ rsc: '1' }))).toBe('app-2');
+        }
+      }
+    },
+  );
+
+  it('places a Pages Router data destination in the Function of its partially resolved page', () => {
+    const bundle = partialFunctionBundle('/app', false);
+    const data = `/app/_next/data/${bundle.buildId}/en/items/[id].json`;
+    const routing = dynamicRouting(
+      {
+        ...bundle,
+        routing: {
+          ...bundle.routing,
+          dynamicRoutes: [
+            {
+              sourceRegex: String.raw`^/app/_next/data/[^/]+/en/items/(?<nxtPid>[^/]+?)\.json$`,
+              destination: data,
+            },
+          ],
+        },
+      },
+      new Set(),
+    );
+
+    expect(routing.dynamicRoutes).toStrictEqual([
+      {
+        sourceRegex: String.raw`^/app/_next/data/[^/]+/en/items/(?<nxtPid>[^/]+?)\.json$`,
+        function: 'app-2',
+      },
+    ]);
+  });
+
+  it('finds the original entrypoint by id when its pathname has another spelling', () => {
+    const bundle = partialFunctionBundle('', true);
+    const id = '/implementation/items';
+    const manifest = functionManifest({
+      ...bundle,
+      entrypoints: bundle.entrypoints.map((entry) =>
+        entry.function === 'app-2' ? { ...entry, id } : entry,
+      ),
+      prerenders: bundle.prerenders.map((prerender) => {
+        return {
+          ...prerender,
+          route: id,
+          parentOutputId: id,
+        };
+      }),
+    });
+
+    expect(functionFor(manifest, new URL('https://example.test/ja/items/one'), new Headers())).toBe(
+      'app-2',
+    );
+  });
+
+  it.each([undefined, 'app-3'] as const)(
+    'keeps a direct entrypoint authoritative when its Function is %s',
+    (owner) => {
+      const bundle = partialFunctionBundle('', true);
+      const pathname = '/en/items/[id]';
+      const manifest = functionManifest({
+        ...bundle,
+        entrypoints: [
+          ...bundle.entrypoints,
+          { id: pathname, pathname, kind: 'app-page', ...(owner && { function: owner }) },
+        ],
+      });
+
+      expect(
+        functionFor(manifest, new URL('https://example.test/en/items/one'), new Headers()),
+      ).toBe(owner ?? 'app');
+      expect(
+        functionFor(manifest, new URL('https://example.test/ja/items/one'), new Headers()),
+      ).toBe('app-2');
+    },
+  );
+
+  it.each(['.rsc', '.segments/archive'])(
+    'keeps a primary entrypoint named with %s ahead of its apparent data owner',
+    (suffix) => {
+      const bundle = partialFunctionBundle('', false);
+      const pathname = `/en/items/[id]${suffix}`;
+      const manifest = functionManifest({
+        ...bundle,
+        entrypoints: [...bundle.entrypoints, { id: pathname, pathname, kind: 'app-page' }],
+        routing: {
+          ...bundle.routing,
+          dynamicRoutes: [
+            { sourceRegex: '^/literal/(?<nxtPid>[^/]+?)(?:/)?$', destination: pathname },
+          ],
+        },
+      });
+
+      expect(
+        functionFor(manifest, new URL('https://example.test/literal/one'), new Headers()),
+      ).toBe('app');
+    },
+  );
+
+  it('preserves the conditions and ordering of overlapping routes when finding their Functions', () => {
+    const bundle = partialFunctionBundle('', false);
+    const fallback = '/fallback/[id]';
+    const sourceRegex = '^/choice/(?<nxtPid>[^/]+?)(?:/)?$';
+    const manifest = functionManifest({
+      ...bundle,
+      entrypoints: [
+        ...bundle.entrypoints,
+        { id: fallback, pathname: fallback, kind: 'app-page', function: 'app-3' },
+      ],
+      routing: {
+        ...bundle.routing,
+        dynamicRoutes: [
+          {
+            sourceRegex,
+            destination: '/en/items/[id]',
+            has: [{ type: 'header', key: 'x-route', value: 'first' }],
+          },
+          { sourceRegex, destination: fallback },
+        ],
+      },
+    });
+    const url = new URL('https://example.test/choice/one');
+
+    expect(functionFor(manifest, url, new Headers({ 'x-route': 'first' }))).toBe('app-2');
+    expect(functionFor(manifest, url, new Headers())).toBe('app-3');
+  });
+
+  it('leaves unknown templates and deployments without a split on their existing paths', () => {
+    const bundle = partialFunctionBundle('', true);
+    const unknown = functionManifest({
+      ...bundle,
+      routing: {
+        ...bundle.routing,
+        dynamicRoutes: [
+          { sourceRegex: '^/unknown/(?<nxtPid>[^/]+?)(?:/)?$', destination: '/missing/[id]' },
+        ],
+      },
+    });
+    const unsplit = functionManifest(fixtureBundle());
+
+    expect(unknown.dynamicRoutes?.[0]?.function).toBeUndefined();
+    expect(functionFor(unknown, new URL('https://example.test/unknown/one'), new Headers())).toBe(
+      'app',
+    );
+    expect(unsplit.dynamicRoutes?.[0]?.function).toBeUndefined();
+    expect(functionFor(unsplit, new URL('https://example.test/items/one'), new Headers())).toBe(
+      'app',
+    );
   });
 });
 
