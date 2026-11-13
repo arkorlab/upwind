@@ -33,7 +33,8 @@
     "lint:fix": "eslint . --max-warnings 0 --fix",
     "test": "vitest run",
     "typecheck": "pnpm -r typecheck && tsc --noEmit -p tsconfig.json",
-    "check:ai": "node packages/upwind/scripts/check-ai.ts"
+    "check:ai": "node packages/upwind/scripts/check-ai.ts",
+    "check:deploy-aws": "node packages/upwind/scripts/check-aws.ts"
   },
   "devDependencies": {
     "@eslint/js": "catalog:",

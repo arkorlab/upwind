@@ -67,6 +67,7 @@ const config: KnipConfig = {
     'packages/upwind': {
       // The Workers a deploy ships are bundled by path, so each is an entry of its own.
       entry: [
+        'src/aws/credential-worker.ts',
         'src/resources/entry.ts',
         'src/websocket-dev.ts',
         'src/deploy/workers/{agent,edge}.ts',

@@ -1,7 +1,7 @@
 {
   "name": "upwind",
   "version": "0.4.0",
-  "description": "The upwind CLI: `upwind dev` runs a Next.js development server behind upwind's own front door, which answers `/__upwind` itself; `upwind build` writes the deployment bundle, `upwind preview` serves it on this machine as it is served deployed, and `upwind deploy` deploys it to a Cloudflare account of your own.",
+  "description": "The upwind CLI: develop, build and preview Next.js applications, and deploy them to Cloudflare or AWS Fargate.",
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
@@ -39,6 +39,16 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudformation": "3.1162.0",
+    "@aws-sdk/client-cloudfront": "3.1162.0",
+    "@aws-sdk/client-ec2": "3.1162.0",
+    "@aws-sdk/client-ecr": "3.1162.0",
+    "@aws-sdk/client-ecs": "3.1162.0",
+    "@aws-sdk/client-elastic-load-balancing-v2": "3.1162.0",
+    "@aws-sdk/client-elasticache": "3.1162.0",
+    "@aws-sdk/client-s3": "3.1162.0",
+    "@aws-sdk/client-secrets-manager": "3.1162.0",
+    "@aws-sdk/credential-provider-node": "3.972.93",
     "@stayingupwind/core": "workspace:*",
     "miniflare": "catalog:",
     "rolldown": "catalog:",

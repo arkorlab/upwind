@@ -160,8 +160,46 @@ const checkPathSchema = z
  * is made on the account, under the project's name, and bound to every Function of every
  * deployment; one that is not listed is not there, whatever the code reads.
  */
+const awsDeploySchema = z
+  .object({
+    region: z.string().regex(/^[a-z]{2}(?:-[a-z]+)+-\d$/u),
+    compute: z.literal('fargate').optional(),
+    tasks: z.number().int().min(1).max(100).optional(),
+    cloudFront: z.boolean().optional(),
+    cache: z
+      .object({
+        backend: z.enum(['valkey', 'dynamodb']),
+        nodeType: z
+          .string()
+          .regex(/^cache\.[a-z\d]+\.[a-z\d]+$/u)
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    cpu: z.number().int().positive().optional(),
+    memoryMiB: z.number().int().positive().optional(),
+    architecture: z.enum(['x86_64', 'arm64']).optional(),
+    publicOrigin: z.url().optional(),
+    certificateArn: z
+      .string()
+      .regex(/^arn:aws(?:-[a-z]+)?:acm:[a-z\d-]+:\d{12}:certificate\/[a-f\d-]+$/u)
+      .optional(),
+    build: z
+      .object({
+        context: z.string().min(1).optional(),
+        prepare: z.array(z.string().min(1)).min(1).optional(),
+        env: z.array(variableNameSchema).max(MAX_SECRETS).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 const deploySchema = z
   .object({
+    /** The default remains Cloudflare; AWS is an independent, native Node.js deployment. */
+    target: z.enum(['cloudflare', 'aws']).optional(),
+    aws: awsDeploySchema.optional(),
     /** The project's name on the account; the package's own name, made to fit, when absent. */
     name: z.string().regex(DEPLOY_NAME).optional(),
     /** Whether the edge answers on its `workers.dev` name; it does unless this says no. */
@@ -186,7 +224,23 @@ const deploySchema = z
     /** Whether Cloudflare keeps the Functions' logs; it does not unless this says so. */
     logs: z.boolean().optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((deploy, context) => {
+    if (deploy.target === 'aws' && deploy.aws === undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['aws'],
+        message: 'AWS Fargate requires aws.region',
+      });
+    }
+    if (deploy.target !== 'aws' && deploy.aws !== undefined) {
+      context.addIssue({
+        code: 'custom',
+        path: ['target'],
+        message: 'deploy.aws requires target: aws',
+      });
+    }
+  });
 
 /** What `upwind deploy` reads of a project's configuration, as `deploySchema` reads it. */
 export type DeployConfig = z.infer<typeof deploySchema>;

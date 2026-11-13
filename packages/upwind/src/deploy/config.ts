@@ -2,6 +2,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { awsDeploySettings, type AwsDeployInput } from '../aws/settings.ts';
+import type { AwsDeploySettings } from '../aws/types.ts';
 import { ADAPTER_PACKAGE } from '../dev/adapter.ts';
 import { resolveFromProject } from '../dev/next-app.ts';
 import { moduleVersion, ownVersion } from '../manifest.ts';
@@ -27,6 +29,8 @@ export interface StorageBinding {
 }
 
 export interface DeploySettings {
+  readonly target?: 'cloudflare' | 'aws' | undefined;
+  readonly aws?: AwsDeploySettings | undefined;
   /** The configuration file the settings came from, relative to the project; for messages. */
   readonly file: string | undefined;
   readonly project: string;
@@ -48,8 +52,11 @@ export const DEFAULT_KEEP = 5;
 
 export interface AdapterConfig {
   readonly file: string | undefined;
+  readonly crons?: readonly unknown[] | undefined;
   readonly deploy?:
     | {
+        readonly target?: 'cloudflare' | 'aws' | undefined;
+        readonly aws?: AwsDeployInput | undefined;
         readonly name?: string | undefined;
         readonly workersDev?: boolean | undefined;
         readonly hostnames?: readonly string[] | undefined;
@@ -129,7 +136,27 @@ export async function readDeploySettings(
     );
   }
   const keep = overrides.keep ?? deploy.keep ?? DEFAULT_KEEP;
+  let aws: AwsDeploySettings | undefined;
+  if (deploy.target === 'aws') {
+    if (deploy.aws === undefined) throw new Error('deploy.target aws requires deploy.aws.region');
+    if (
+      Object.keys(deploy.storage ?? {}).length > 0 ||
+      deploy.cspNonce !== undefined ||
+      deploy.images === true ||
+      deploy.workersDev !== undefined ||
+      (deploy.hostnames?.length ?? 0) > 0 ||
+      (config.crons?.length ?? 0) > 0
+    ) {
+      throw new Error(
+        'AWS Fargate does not provide Cloudflare storage, Images, workersDev, edge CSP nonces, hostnames, or host cron jobs; configure the native application instead',
+      );
+    }
+    aws = awsDeploySettings(deploy.aws);
+  } else if (deploy.aws !== undefined) {
+    throw new Error('deploy.aws requires deploy.target aws');
+  }
   return {
+    ...(aws === undefined ? {} : { target: 'aws' as const, aws }),
     file: config.file,
     project,
     workersDev: deploy.workersDev ?? true,
