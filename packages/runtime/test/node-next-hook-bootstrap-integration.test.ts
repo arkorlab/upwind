@@ -156,6 +156,19 @@ if(ioCalls!==0||tickCalls!==0)throw new Error('application IO hook ran during pr
 `;
 
 describe.skipIf(!ENABLED)('fixed Next require-hook bootstrap (dedicated Linux CI)', () => {
+  it.each(
+    ['24.22.1', '24.22.3', '26.13.0', '26.13.1'].filter(
+      (version) => version !== process.versions.node,
+    ),
+  )('rejects a hook record produced on the different reviewed Node %s', async (other) => {
+    await expect(
+      scenario('', {
+        before: `config.record.nodeVersion=${JSON.stringify(other)};`,
+        install: 'initializeNodeNextRequireHook(import.meta.url,config);',
+      }),
+    ).rejects.toThrow('record and runtime Node differ');
+  });
+
   it('preserves Next IO hooks across cached loads and genuine protected JWT initialization', async () => {
     const result = await scenario(
       `${APPLICATION_IO_HOOKS}

@@ -89,7 +89,7 @@ Object.defineProperty(Error.prototype,inspectKey,{value:appInspect,writable:true
 `;
 
 describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)', () => {
-  it.runIf(process.versions.node === '26.13.0')(
+  it.runIf(process.versions.node === '26.13.0' || process.versions.node === '26.13.1')(
     'refuses a supplied SlowBuffer accessor without invoking it',
     async () => {
       await expect(
@@ -101,9 +101,11 @@ describe.skipIf(!ENABLED)('fixed Node JWT evaluation guard (dedicated Linux CI)'
     },
   );
 
-  it('rejects a record for the other reviewed Node release', async () => {
-    const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
-
+  it.each(
+    ['24.22.1', '24.22.3', '26.13.0', '26.13.1'].filter(
+      (version) => version !== process.versions.node,
+    ),
+  )('rejects a record produced on the different reviewed Node %s', async (other) => {
     await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
       'invalid build-produced source record',
     );

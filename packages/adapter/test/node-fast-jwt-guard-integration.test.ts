@@ -78,9 +78,11 @@ console.log('unchanged-fast-jwt');`,
     );
   });
 
-  it('rejects a record for the other reviewed Node release', async () => {
-    const other = process.versions.node === '24.22.1' ? '26.13.0' : '24.22.1';
-
+  it.each(
+    ['24.22.1', '24.22.3', '26.13.0', '26.13.1'].filter(
+      (version) => version !== process.versions.node,
+    ),
+  )('rejects a record produced on the different reviewed Node %s', async (other) => {
     await expect(scenario(`record.nodeVersion=${JSON.stringify(other)};`, '')).rejects.toThrow(
       'invalid build-produced source record',
     );

@@ -385,17 +385,21 @@ describe('private Node JWT initialization preconditions', () => {
     },
   );
 
-  it.each(['24.22.1', '26.13.0'])(
-    'captures Node %s and rejects switching to the other reviewed loader',
-    (nodeVersion) => {
-      const own = fixture({ nodeVersion });
-      assertNodeJwtRealm(own.realm);
-      own.versions.node = nodeVersion === '24.22.1' ? '26.13.0' : '24.22.1';
-      own.process.version = `v${own.versions.node}`;
+  it.each([
+    ['24.22.1', '24.22.3'],
+    ['24.22.3', '24.22.1'],
+    ['26.13.0', '26.13.1'],
+    ['26.13.1', '26.13.0'],
+    ['24.22.3', '26.13.1'],
+    ['26.13.1', '24.22.3'],
+  ])('captures Node %s and rejects switching to the reviewed loader %s', (nodeVersion, other) => {
+    const own = fixture({ nodeVersion });
+    assertNodeJwtRealm(own.realm);
+    own.versions.node = other;
+    own.process.version = `v${own.versions.node}`;
 
-      expect(checking(own.realm)).toThrow('descriptor changed (version)');
-    },
-  );
+    expect(checking(own.realm)).toThrow('descriptor changed (version)');
+  });
 
   it('refuses a changed Node version and copied private token', () => {
     const own = fixture();
