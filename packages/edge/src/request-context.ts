@@ -12,9 +12,9 @@ const LOG_CORRELATION = Symbol.for('@stayingupwind/edge/log-correlation');
 
 /** Materialize one ingress-owned UUID, reused when routing rebuilds its forwarding context. */
 function logCorrelationFor(request: IncomingRequest): string {
-  const original = request as IncomingRequest & { [LOG_CORRELATION]?: string };
+  const original = request as IncomingRequest & { [LOG_CORRELATION]?: string | null };
   const existing = original[LOG_CORRELATION];
-  if (existing !== undefined) return existing;
+  if (existing !== undefined && existing !== null) return existing;
   const id = crypto.randomUUID();
   original[LOG_CORRELATION] = id;
   return id;
