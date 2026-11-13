@@ -322,6 +322,16 @@ function held(runtime: EdgeRuntime, manifestId: string): Lookup<ProjectManifest>
 }
 
 /**
+ * Whether this isolate holds the manifest `getManifest` would answer `manifestId` with from memory,
+ * asked without using it (`SharedByteLru.has`): what a host asks of manifests a refreshed pointer
+ * names (`PointerKind.manifestsAhead`), which no request may have used, and whose asking must not
+ * keep them from being the first the budget lets go.
+ */
+export function holdsManifest(runtime: EdgeRuntime, manifestId: string): boolean {
+  return runtime.memory.manifests.has(manifestId);
+}
+
+/**
  * Held only where both stores said there is none. A store that threw said nothing — it is an
  * infrastructure fact, asked again at once (`storage.ts`) — and the answer cannot tell the two
  * apart, because R2's failure leaves KV's answer standing rather than replacing it. Held on that,

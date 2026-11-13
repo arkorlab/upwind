@@ -590,13 +590,19 @@ export async function handleDocument(input: DocumentInput): Promise<Response> {
 /** The document the edge answers itself: its shell, and what a resume renders behind it. */
 async function deliverDocument(input: DocumentInput, complete: boolean): Promise<Response> {
   const { entry, manifest, resolved, generation } = input;
-  // Shell first: its read starts before anything else, and the rendering's beside it rather than
-  // after it — neither read may wait on the other. The resume is then built and dispatched before
-  // the shell is awaited, and deliberately so: nothing goes out until this function returns its
-  // response, so dispatching after the shell would bring the first byte no earlier, only start the
-  // suffix later, where dispatching now lets the application's Worker render while the shell is
+  // Shell first: its read starts before anything else. The resume is then built and dispatched
+  // before the shell is awaited, and deliberately so: nothing goes out until this function returns
+  // its response, so dispatching after the shell would bring the first byte no earlier, only start
+  // the suffix later, where dispatching now lets the application's Worker render while the shell is
   // read. What that puts in front of a shell already in memory is the resume's construction, which
   // is synchronous — a request and its headers — and waits on nothing.
+  //
+  // The rendering's read comes after the dispatch — still beside the shell's, neither waiting on
+  // the other — because it can serve this response only from the isolate's memory: it is given one
+  // turn past the shell (`readyRendering`), and memory answers within that turn whenever it is
+  // asked. A read of storage only fills memory for the next request; started first, its reads of KV
+  // and the Cache API took some of the six requests a Worker may have waiting for headers at once,
+  // ahead of the resume, which in a cold isolate could leave the resume waiting behind them.
   const lookupStart = input.edge.runtime.now();
   const shellLookup =
     generation === undefined
@@ -621,12 +627,6 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
   const layering = layeringFor(input, complete, encoding);
   const rendering = usableRendering(input, encoding);
   const head = input.request.method === 'HEAD';
-  // A `HEAD` is answered with no body, so the rendering is not read for it: its headers are the
-  // same whichever bytes would have gone out under them (`deliveryFor`).
-  const encodedRead =
-    rendering === undefined || head
-      ? undefined
-      : trackRendering(loadShell(rendering, resolved.shell, input.edge));
   const { client, edge } = continuationRequest(input, nonce);
   const handle =
     complete || head
@@ -639,6 +639,12 @@ async function deliverDocument(input: DocumentInput, complete: boolean): Promise
           resume: resumeOf(generation),
           headers: toldBesideResume(input, generation),
         });
+  // A `HEAD` is answered with no body, so the rendering is not read for it: its headers are the
+  // same whichever bytes would have gone out under them (`deliveryFor`).
+  const encodedRead =
+    rendering === undefined || head
+      ? undefined
+      : trackRendering(loadShell(rendering, resolved.shell, input.edge));
   // The resume goes with a client that leaves before a splice holds it (`followClient`).
   const { upstream, clientLeft, ended, release } = followResume(input, handle);
   servedFromRecord(edge, generation);
