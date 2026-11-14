@@ -287,6 +287,13 @@ function canonicalMap(text: string, file: string, project: ProjectBounds | undef
     return text;
   }
   const fields = map as Record<string, unknown>;
+  // A project-only map with no sources maps every position to nothing. Its unmapped line and
+  // column boundaries carry no frame information, so they cannot keep identical chunks apart.
+  // Whole maps, and project maps retaining any source, still compare every mapping and name.
+  if (project !== undefined && Array.isArray(fields['sources']) && fields['sources'].length === 0) {
+    fields['mappings'] = '';
+    fields['names'] = [];
+  }
   const root = typeof fields['sourceRoot'] === 'string' ? fields['sourceRoot'] : undefined;
   const sources = Array.isArray(fields['sources'])
     ? fields['sources'].map((source: unknown) =>
