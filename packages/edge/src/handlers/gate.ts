@@ -2,6 +2,7 @@ import { gateFor, type ProjectManifest, type RouteGate } from '@stayingupwind/co
 import {
   EDGE_DEBUG_HEADER,
   type ForwardingContext,
+  hasRouteBodyControlHeader,
   NAVIGATION_REQUEST_HEADERS,
   PatternBudgetExceededError,
   RSC_HEADER,
@@ -51,10 +52,13 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { gateBodyDecodedByFetch } from './gate-body-encoding.ts';
-import { decompressLive } from './live-compression.ts';
+import { decodeNonceDocument, type DecodeNonceDocumentInput } from './gate-body-encoding.ts';
 import { headerRulesAsRouted } from './middleware.ts';
-import { forwardedResponse, serviceUnavailableResponse } from './responses.ts';
+import {
+  carriesApplicationCredentials,
+  forwardedResponse,
+  serviceUnavailableResponse,
+} from './responses.ts';
 
 /**
  * A request of a route the build declared a gate for (`ProjectManifest.gates`), asked of that gate
@@ -394,7 +398,12 @@ function layHeaderRules(input: GateInput, headers: Headers): void {
  * handed on. A document given the nonce the edge minted for it (`gateNonce`), in its headers and on
  * its scripts (`rewriteDocumentNonces`). Streamed as it comes.
  */
-function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Response {
+async function gateAnswer(
+  input: GateInput,
+  gate: RouteGate,
+  answer: Response,
+  asked: Asked,
+): Promise<Response> {
   let response = forwardedResponse(answer, input.forwarding, input.request.method);
   try {
     layHeaderRules(input, response.headers);
@@ -425,9 +434,17 @@ function gateAnswer(input: GateInput, gate: RouteGate, answer: Response): Respon
     headers.delete(CONTENT_ENCODING);
     return response;
   }
-  const decoded = decodedNonceDocument(response, input.host.gates);
+  const encoding = headers.get(CONTENT_ENCODING);
+  if (encoding === null || encoding.trim() === '') {
+    return rewriteDocumentNonces(response, nonce);
+  }
+  const decoded = await decodedNonceDocument({
+    response,
+    gate,
+    gates: input.host.gates,
+    left: GATE_TIMEOUT_MS - (performance.now() - asked.since),
+  });
   if (decoded === undefined) {
-    releaseStream(response.body, 'gate');
     return serviceUnavailableResponse(GATE_UNAVAILABLE);
   }
   return rewriteDocumentNonces(decoded, nonce);
@@ -604,7 +621,7 @@ async function answeredAtGate(
   }
   return said === GATE_SHELL
     ? shellOf(input, gate, answer, asked)
-    : gateAnswer(input, gate, answer);
+    : gateAnswer(input, gate, answer, asked);
 }
 
 async function throughGate(
@@ -661,16 +678,31 @@ function documentGateOf(input: GateInput, gate: RouteGate): string | undefined {
 }
 
 /**
+ * Whether `input` is a capture probe of the gate's authority (`GATE_CAPTURE_HEADER`): a
+ * credentialed `GET` that is no router or route-body request. `gateRequest` strips the gate
+ * protocol's headers before asking, so a bare `GATE_CAPTURE_HEADER` from an anonymous visitor
+ * reaches the gate indistinguishable from any other anonymous request and cannot ask for one.
+ */
+function asksCapture(input: GateInput): boolean {
+  const { request, host } = input;
+  return (
+    request.method === 'GET' &&
+    request.headers.get(GATE_CAPTURE_HEADER) === GATE_CAPTURE &&
+    !hasRouteBodyControlHeader(request.headers) &&
+    carriesApplicationCredentials(request.headers, host.credentials)
+  );
+}
+
+/**
  * Whether `gate` is one that said it decides a request that takes a shell alone, and the request
  * is none the edge would serve one for — a `HEAD`, the router's payload, a prefetch, a crawler's
- * or a client's GET that says nothing of itself — nor one that says it is to be captured
- * (`GATE_CAPTURE_HEADER`), which only its gate lets through as one. It goes on unasked, as the
- * gate's pass would have it: routed as with no gate, and kept from shared caches as a pass's answer
- * is (`unshared`), without the round trip to the gate.
+ * or a client's GET that says nothing of itself — nor a credentialed capture probe of its own
+ * (`asksCapture`), which only its gate lets through as one. It goes on unasked, as the gate's pass
+ * would have it: routed as with no gate, and kept from shared caches as a pass's answer is
+ * (`unshared`), without the round trip to the gate.
  */
 function goesOnUnasked(input: GateInput, gate: RouteGate): boolean {
-  const { request } = input;
-  if (takesShell(request) || request.headers.get(GATE_CAPTURE_HEADER) === GATE_CAPTURE) {
+  if (takesShell(input.request) || asksCapture(input)) {
     return false;
   }
   const key = documentGateOf(input, gate);
@@ -715,36 +747,6 @@ function unshared(response: Response): Response {
 }
 
 /** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(
-  response: Response,
-  gates: EdgeGates | undefined,
-): Response | undefined {
-  const encoding = response.headers.get(CONTENT_ENCODING);
-  if (encoding === null || encoding.trim() === '' || response.body === null) return response;
-  const parts = encoding.split(',');
-  const codings: ('br' | 'deflate' | 'gzip' | 'identity')[] = [];
-  for (const part of parts) {
-    const coding = part.trim().toLowerCase();
-    if (!supportedCoding(coding)) return undefined;
-    codings.push(coding);
-  }
-  // Fetch response bodies carry bytes; the Workers declaration leaves their element type open.
-  let body = response.body as ReadableStream<Uint8Array>;
-  const remaining = gateBodyDecodedByFetch(gates, encoding) ? [] : codings.toReversed();
-  for (const coding of remaining) {
-    if (coding !== 'identity') body = decompressLive(body, coding);
-  }
-  const headers = new Headers(response.headers);
-  headers.delete(CONTENT_ENCODING);
-  return new Response(body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-    encodeBody: 'automatic',
-  });
-}
-
-/** Content codings the nonce path can remove without inspecting or guessing another format. */
-function supportedCoding(coding: string): coding is 'br' | 'deflate' | 'gzip' | 'identity' {
-  return ['br', 'deflate', 'gzip', 'identity'].includes(coding);
+function decodedNonceDocument(input: DecodeNonceDocumentInput): Promise<Response | undefined> {
+  return decodeNonceDocument(input);
 }

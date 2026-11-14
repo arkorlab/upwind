@@ -17,10 +17,11 @@ const GATE = 'checker';
 const POLICY = 'content-security-policy';
 const HTML = '<html><script nonce="kept">1</script><p>whole tail</p></html>';
 const OK_STATUS = 200;
+const UNAVAILABLE_STATUS = 503;
 
 interface Case {
   readonly name: string;
-  readonly coding: 'gzip' | 'br' | 'deflate' | 'gzip, br' | 'identity';
+  readonly coding: 'gzip' | 'br' | 'deflate' | 'gzip, identity' | 'gzip, br' | 'identity';
   readonly transport: 'fetch' | 'raw';
   readonly runtimeDecoded: boolean;
 }
@@ -45,8 +46,8 @@ const CASES: readonly Case[] = [
     runtimeDecoded: false,
   },
   {
-    name: 'a fetched stacked coding keeps explicit decoding',
-    coding: 'gzip, br',
+    name: 'a fetched coding paired with identity keeps explicit decoding',
+    coding: 'gzip, identity',
     transport: 'fetch',
     runtimeDecoded: false,
   },
@@ -171,6 +172,21 @@ describe('gate nonce rewriting across the real Workers fetch boundary', () => {
     expect(body).toContain('<p>whole tail</p>');
     expect(response.headers.get('content-encoding')).toBeNull();
     expect(response.headers.has('etag')).toBe(false);
+    expect(downstream).toStrictEqual([]);
+  });
+
+  it('refuses a fetched multi-layer coding without falling through', async () => {
+    const { response, readError, downstream } = await routed({
+      name: 'a fetched stacked coding is refused',
+      coding: 'gzip, br',
+      transport: 'fetch',
+      runtimeDecoded: false,
+    });
+
+    expect(readError).toBeUndefined();
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.has(POLICY)).toBe(false);
+    expect(response.headers.get('content-encoding')).toBeNull();
     expect(downstream).toStrictEqual([]);
   });
 });
