@@ -34,6 +34,7 @@ import { stampLogCorrelation } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
+import { externalRewriteRefused, externalRewriteSignal } from './external-rewrite-target.ts';
 import { observeRequestMetric } from './observer.ts';
 import {
   anonymousRequest,
@@ -154,6 +155,8 @@ const SET_COOKIE_HEADER = 'set-cookie';
 const CONTENT_TYPE_HEADER = 'content-type';
 const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 const HTTP_OK = 200;
+const EXTERNAL_REWRITE = 'external-rewrite';
+const EXTERNAL_REWRITE_UNAVAILABLE = 'external-rewrite-unavailable';
 
 function describe(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).slice(0, MAX_REASON_LENGTH);
@@ -637,7 +640,7 @@ function unreachableRewrite(
   rewrite: ExternalRewrite,
   configured: ConfiguredHeaders,
 ): Response {
-  const own = badGatewayResponse('external-rewrite-unavailable');
+  const own = badGatewayResponse(EXTERNAL_REWRITE_UNAVAILABLE);
   const headers = new Headers();
   layRouted(edge, headers, rewrite, configured);
   for (const [name, value] of own.headers) {
@@ -680,6 +683,11 @@ export async function followExternalRewrite(
   rewrite: ExternalRewrite,
   answered: MiddlewareAnswered,
 ): Promise<Response> {
+  if (externalRewriteRefused(rewrite.url, request, edge)) {
+    releaseStream(request.body, EXTERNAL_REWRITE);
+    recordMiddlewareAnswer(edge, EXTERNAL_REWRITE_UNAVAILABLE, answered);
+    return unreachableRewrite(edge, rewrite, answered.configured);
+  }
   // What the middleware was handed, which matters most here: this request goes to an origin the
   // *application* named, further from us than its own Worker rather than nearer.
   const headers = new Headers();
@@ -694,17 +702,15 @@ export async function followExternalRewrite(
   let upstream: Response;
   const startedAt = edge.runtime.now();
   try {
-    // No deadline of the edge's own. Next.js gives a rewrite it proxies the application's
-    // `experimental.proxyTimeout`, thirty seconds unless the application raised it, and the bundle
-    // does not carry that setting: a fixed one here would cut short an application that had.
+    // Bounded to Next.js's default 30-second proxy timeout alongside client cancellation so a
+    // stalled external origin cannot pin the edge isolate indefinitely.
     upstream = await edge.runtime.fetchImpl(
       new Request(rewrite.url.href, {
         method: request.method,
         headers,
         body: request.body,
         redirect: 'manual',
-        // With no deadline of its own, the client leaving is what lets it go.
-        signal: request.signal,
+        signal: externalRewriteSignal(request.signal),
       }),
     );
   } catch {
@@ -712,7 +718,7 @@ export async function followExternalRewrite(
     // the application's rewrite is unreachable, which is not this Worker failing. Left to
     // propagate it would end the request as an uncaught exception.
     const fetched = { ms: edge.runtime.now() - startedAt };
-    recordMiddlewareAnswer(edge, 'external-rewrite-unavailable', { ...answered, fetched });
+    recordMiddlewareAnswer(edge, EXTERNAL_REWRITE_UNAVAILABLE, { ...answered, fetched });
     return unreachableRewrite(edge, rewrite, answered.configured);
   }
   const fetched = { ms: edge.runtime.now() - startedAt };
@@ -725,9 +731,9 @@ export async function followExternalRewrite(
   if (edge.privateDelivery) {
     keptByNobody(responseHeaders);
   }
-  responseHeaders.set(EDGE_DEBUG_HEADER, 'passthrough;reason=external-rewrite');
+  responseHeaders.set(EDGE_DEBUG_HEADER, `passthrough;reason=${EXTERNAL_REWRITE}`);
   applyCspReporting(responseHeaders, edge.cspReportingPath);
-  recordMiddlewareAnswer(edge, 'external-rewrite', { ...answered, fetched });
+  recordMiddlewareAnswer(edge, EXTERNAL_REWRITE, { ...answered, fetched });
   return answer;
 }
 

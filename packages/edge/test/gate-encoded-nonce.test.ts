@@ -1,12 +1,15 @@
 // eslint-disable-next-line no-restricted-imports, import-x/no-nodejs-modules -- the Workers compatibility module creates and reads the gate's saved encoded fixture bytes.
 import { brotliCompressSync, brotliDecompressSync, deflateSync, gzipSync } from 'node:zlib';
 
+import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
+import { MAX_GATE_SHELL_BYTES } from '@stayingupwind/host/bindings';
 import type { EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeGates } from '../src/edge-host.ts';
+import { GATE_TIMEOUT_MS } from '../src/handlers/gate.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -178,14 +181,17 @@ const CASES = [
   { id: 'br/1', codings: ['br'], copies: 1 },
   { id: 'br/64', codings: ['br'], copies: LARGE_COPIES },
   { id: 'deflate/64', codings: ['deflate'], copies: LARGE_COPIES },
-  { id: 'gzip then br', codings: ['gzip', 'br'], copies: LARGE_COPIES },
-  { id: 'br then gzip', codings: ['br', 'gzip'], copies: LARGE_COPIES },
-  { id: 'two br layers', codings: ['br', 'br'], copies: LARGE_COPIES },
+  { id: 'gzip then identity', codings: ['gzip', 'identity'], copies: LARGE_COPIES },
+  { id: 'identity then br', codings: ['identity', 'br'], copies: LARGE_COPIES },
   { id: 'fragmented br', codings: ['br'], copies: LARGE_COPIES, piece: 1 },
   { id: 'fragmented gzip', codings: ['gzip'], copies: LARGE_COPIES, piece: 1 },
 ] as const;
 
 describe('encoded terminal gate HTML nonce', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it.each(CASES)('stamps the policy nonce on $id', async (example) => {
     const saved = savedDocument(example.copies);
     const bytes = encoded(saved, example.codings);
@@ -266,8 +272,8 @@ describe('encoded terminal gate HTML nonce', () => {
     expect(response.headers.get('cache-control')).toBe('private, no-store');
   });
 
-  it.each(['zstd', 'gzip, unknown', 'gzip,'])(
-    'refuses unsupported coding %s without falling through or retaining its body',
+  it.each(['zstd', 'gzip, unknown', 'gzip,', 'gzip, gzip', 'gzip, br', 'br, gzip', 'br, br'])(
+    'refuses unsupported or multi-layer coding %s without falling through or retaining its body',
     async (coding) => {
       let sent = false;
       let cancelled = false;
@@ -286,11 +292,84 @@ describe('encoded terminal gate HTML nonce', () => {
       const { response } = await routed('GET', answer(body, coding), { cspNonce: true });
 
       expect(response.status).toBe(UNAVAILABLE_STATUS);
+      expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
       expect(response.headers.has('content-encoding')).toBe(false);
       expect(response.headers.has(CSP)).toBe(false);
       expect(cancelled).toBe(true);
     },
   );
+
+  it('aborts an oversized decompressed gzip document within MAX_GATE_SHELL_BYTES', async () => {
+    const oversized = Uint8Array.from(
+      gzipSync(new Uint8Array(MAX_GATE_SHELL_BYTES * 2).fill(0x41)),
+    );
+    let at = 0;
+    let cancelled = false;
+    const chunkSize = 256;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (at >= oversized.byteLength) {
+            controller.close();
+            return;
+          }
+          controller.enqueue(oversized.subarray(at, at + chunkSize));
+          at = Math.min(at + chunkSize, oversized.byteLength);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const { response } = await routed('GET', answer(body, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(at).toBeLessThan(oversized.byteLength);
+  });
+
+  it('answers 503 when an encoded gate document fails before completing', async () => {
+    const partial = encoded(savedDocument(), ['gzip']).subarray(0, 10);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(partial);
+        controller.error(new Error('encoded gate stream interrupted'));
+      },
+    });
+    const { response } = await routed('GET', answer(body, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+  });
+
+  it('aborts a stalled encoded gate document once GATE_TIMEOUT_MS has elapsed', async () => {
+    let cancelled = false;
+    let reads = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => {
+      reads += 1;
+      return reads * (GATE_TIMEOUT_MS + 1);
+    });
+    const stalled = new ReadableStream<Uint8Array>({
+      pull() {
+        return new Promise<void>(() => {
+          /* Never yields a chunk. */
+        });
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { response } = await routed('GET', answer(stalled, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+  });
 
   it('keeps unsupported coding opaque when nonce handling is off', async () => {
     const bytes = new TextEncoder().encode(savedDocument());

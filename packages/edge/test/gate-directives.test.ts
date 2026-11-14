@@ -466,7 +466,7 @@ function unsaidRequest(): IncomingRequest {
 /** A `GET` of the post that says it is to be captured, as the authority's own for a shell. */
 function capturedRequest(): IncomingRequest {
   return new Request('https://site.example/posts/abc', {
-    headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE },
+    headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE, authorization: 'Bearer gate-probe' },
   });
 }
 
@@ -601,6 +601,100 @@ describe('a gate that decides a request that takes a shell alone', () => {
     const { asked } = await served(capturedRequest(), documentsPassing, { memory });
 
     expect(asked).toHaveLength(1);
+    expect(asked[0]?.get('authorization')).toBe('Bearer gate-probe');
+  });
+
+  /**
+   * An unauthenticated external request carrying only bare `GATE_CAPTURE_HEADER`, or a `HEAD` or
+   * router payload request carrying `GATE_CAPTURE_HEADER`, cannot bypass `documentGates` to force
+   * repeated gate dispatches.
+   */
+  it.each([
+    [
+      'bare capture header without credentials',
+      () =>
+        new Request('https://site.example/posts/abc', {
+          headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE },
+        }),
+    ],
+    [
+      'HEAD with capture header and authorization',
+      () =>
+        navigation('/posts/abc', {
+          method: 'HEAD',
+          headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE, authorization: 'Bearer gate-probe' },
+        }),
+    ],
+    [
+      'RSC payload request with capture header and authorization',
+      () =>
+        payloadRequest({
+          [GATE_CAPTURE_HEADER]: GATE_CAPTURE,
+          authorization: 'Bearer gate-probe',
+        }),
+    ],
+  ])('lets %s go on unasked once document scope is remembered', async (_case, request) => {
+    const memory = createEdgeMemory(() => NOW);
+    await served(payloadRequest(), documentsPassing, { memory });
+    const { asked } = await served(request(), documentsPassing, { memory });
+
+    expect(asked).toStrictEqual([]);
+  });
+
+  /**
+   * Host-only credentials are stripped before the gate sees the request, so a request carrying
+   * `GATE_CAPTURE_HEADER` with only host credentials still goes on unasked.
+   */
+  it('lets a capture header carrying only host credentials go on unasked', async () => {
+    const memory = createEdgeMemory(() => NOW);
+    const hostCookie = 'host_session';
+    await served(payloadRequest(), documentsPassing, { memory });
+    const site = await seedSite({ document: pprDocument(), ...GATED });
+    const asked: Headers[] = [];
+    const runtime = standaloneRuntime(env, {
+      now: () => NOW,
+      memory,
+      dispatchApp: () => Promise.resolve(new Response('from the Function')),
+    });
+    const host: EdgeHost = {
+      ...standaloneHost(env),
+      credentials: { cookies: [hostCookie], headers: ['x-host-token'] },
+      gates: {
+        answer: (_name, gateRequest): Promise<Response> => {
+          asked.push(new Headers(gateRequest.headers));
+          return Promise.resolve(documentsPassing());
+        },
+      },
+    };
+    const request = new Request('https://site.example/posts/abc', {
+      headers: {
+        [GATE_CAPTURE_HEADER]: GATE_CAPTURE,
+        cookie: `${hostCookie}=secret`,
+        'x-host-token': 'secret',
+      },
+    });
+    const ctx = createExecutionContext();
+    await serveFromPointer(
+      {
+        request,
+        url: new URL(request.url),
+        env,
+        ctx,
+        runtime,
+        host,
+        pointer: site.pointer,
+        pointerMs: 0,
+        privateDelivery: false,
+        cspReportingPath: undefined,
+      },
+      {
+        manifestLookup: Promise.resolve({ kind: 'found', value: manifestOf(site, {}) }),
+        policyLookup: Promise.resolve({ kind: 'found', source: 'exact', policy: POLICY }),
+      },
+    );
+    await waitOnExecutionContext(ctx);
+
+    expect(asked).toStrictEqual([]);
   });
 
   it('asks again of a route whose gate said nothing of what it decides', async () => {
