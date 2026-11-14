@@ -62,7 +62,7 @@ catalog:
   # than the compatibility date a Function is built against (`FUNCTION_COMPATIBILITY_DATE` in
   # `@stayingupwind/adapter`). Keep this aligned with the version Wrangler uses.
   miniflare: 5.20261102.0-beta
-  next: 16.4.5
+  next: 16.4.6
   # A whole output chunk's syntax tree, handed over in a buffer rather than as one JSON string
   # (`chunk-ast.ts` in `@stayingupwind/adapter`). Build-time only. The version rolldown parses
   # with, so that the tree is the one `parseAst` answers.
