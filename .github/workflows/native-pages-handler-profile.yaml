@@ -65,7 +65,12 @@ jobs:
         with:
           node-version: 24.22.1
       - name: Independently compile fixed public inputs twice without network
-        run: node tools/native-pages-handler-profile-ci.mts ${{ matrix.option }}
+        env:
+          MATRIX_OPTION: ${{ matrix.option }}
+        run: |
+          set -euo pipefail
+          read -r -a options <<< "$MATRIX_OPTION"
+          node tools/native-pages-handler-profile-ci.mts "${options[@]}"
       - name: Retain unqualified public source corpus for separate review
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

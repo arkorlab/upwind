@@ -49,9 +49,9 @@ describe('dedicated proof fixture selection', () => {
     expect(() => selectFixtures(fixtures, 'missing')).toThrow('no fixture named "missing"');
     expect(() => {
       checkFixtureVersions(selected, ['16.3.0']);
-    }).toThrow('dedicated proof for next@16.4.2');
+    }).toThrow('dedicated proof for next@16.4.5');
     expect(() => {
-      checkFixtureVersions(selected, ['16.4.2', '16.4.2-canary.1']);
-    }).toThrow('dedicated proof for next@16.4.2');
+      checkFixtureVersions(selected, ['16.4.5', '16.4.5-canary.1']);
+    }).toThrow('dedicated proof for next@16.4.5');
   });
 });
