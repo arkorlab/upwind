@@ -30,11 +30,13 @@ export function fetchedGateBodies(gates: EdgeGates): EdgeGates {
   return gates;
 }
 
-/** Exact content codings Workers fetch decodes; deflate and coding lists remain raw. */
+/** Single-token content codings Workers fetch decodes; deflate and coding lists remain raw. */
 export function gateBodyDecodedByFetch(gates: EdgeGates | undefined, encoding: string): boolean {
-  return (
-    gates !== undefined && FETCHED_GATES.has(gates) && (encoding === 'gzip' || encoding === 'br')
-  );
+  if (gates === undefined || !FETCHED_GATES.has(gates)) {
+    return false;
+  }
+  const normalized = encoding.trim().toLowerCase();
+  return normalized === 'gzip' || normalized === 'br';
 }
 
 /** Content codings the nonce path can remove without inspecting or guessing another format. */
@@ -87,23 +89,30 @@ function slicedInput(source: ReadableStream<Uint8Array>): RawInput {
   return { stream, cancel };
 }
 
+interface GateReadBudget {
+  remainingMs: number;
+}
+
 async function readChunkWithin(
   reader: ReadableStreamDefaultReader<Uint8Array>,
-  deadline: number,
+  budget: GateReadBudget,
 ): Promise<ReadableStreamReadResult<Uint8Array>> {
-  const remaining = deadline - performance.now();
-  if (remaining <= 0) {
+  if (budget.remainingMs <= 0) {
     throw new RangeError(BUDGET_EXHAUSTED_DETAIL);
   }
+  const waitMs = budget.remainingMs;
+  const startedAt = performance.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
     timer = setTimeout(() => {
       reject(new RangeError('gate document decode timed out'));
-    }, remaining);
+    }, waitMs);
   });
   try {
     const result = await Promise.race([reader.read(), timeout]);
-    if (!result.done && performance.now() > deadline) {
+    const elapsed = Math.max(0, performance.now() - startedAt);
+    budget.remainingMs -= elapsed;
+    if (!result.done && budget.remainingMs < 0) {
       throw new RangeError(BUDGET_EXHAUSTED_DETAIL);
     }
     return result;
@@ -129,7 +138,7 @@ async function openBoundedDecodedStream(
   gate: RouteGate,
   left: number,
 ): Promise<ReadableStream<Uint8Array> | Uint8Array | undefined> {
-  const deadline = performance.now() + left;
+  const budget: GateReadBudget = { remainingMs: left };
   const reader = decoded.getReader();
   const stopAll = (reason = GATE_STREAM_REASON): void => {
     cancelUpstream(reason);
@@ -137,7 +146,7 @@ async function openBoundedDecodedStream(
   };
   let first: ReadableStreamReadResult<Uint8Array>;
   try {
-    first = await readChunkWithin(reader, deadline);
+    first = await readChunkWithin(reader, budget);
   } catch (error) {
     stopAll();
     logDecodeAbort(gate, error);
@@ -168,7 +177,7 @@ async function openBoundedDecodedStream(
         }
         let next: ReadableStreamReadResult<Uint8Array>;
         try {
-          next = await readChunkWithin(reader, deadline);
+          next = await readChunkWithin(reader, budget);
         } catch (error) {
           stopAll();
           logDecodeAbort(gate, error);

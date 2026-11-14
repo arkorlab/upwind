@@ -154,18 +154,47 @@ function policyNonce(response: Response, header = CSP): string | undefined {
 }
 
 /** One-byte input fragments exercise decoder state without waiting for the complete response. */
-function fragments(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+function fragments(
+  bytes: Uint8Array,
+  size: number,
+  strategy?: QueuingStrategy<Uint8Array>,
+): ReadableStream<Uint8Array> {
   let at = 0;
-  return new ReadableStream({
-    pull(controller) {
-      if (at === bytes.byteLength) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(bytes.slice(at, at + size));
-      at = Math.min(at + size, bytes.byteLength);
+  return new ReadableStream(
+    {
+      pull(controller) {
+        if (at === bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.slice(at, at + size));
+        at = Math.min(at + size, bytes.byteLength);
+      },
     },
-  });
+    strategy,
+  );
+}
+
+async function readWithDownstreamPause(response: Response, pauseMs: number): Promise<string> {
+  if (response.body === null) throw new Error('expected response body');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  const first = await reader.read();
+  if (first.done) throw new Error('expected initial response chunk before pause');
+  if (first.value instanceof Uint8Array) {
+    parts.push(decoder.decode(first.value, { stream: true }));
+  }
+  await vi.advanceTimersByTimeAsync(pauseMs);
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    if (next.value instanceof Uint8Array) {
+      parts.push(decoder.decode(next.value, { stream: true }));
+    }
+  }
+  parts.push(decoder.decode());
+  return parts.join('');
 }
 
 function answer(body: BodyInit | null, encoding: string, type = 'text/html'): Response {
@@ -356,19 +385,22 @@ describe('encoded terminal gate HTML nonce', () => {
     );
     let cancelled = false;
     let sent = false;
-    const body = new ReadableStream<Uint8Array>({
-      pull(controller) {
-        if (sent) {
-          controller.close();
-          return;
-        }
-        sent = true;
-        controller.enqueue(bomb);
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (sent) {
+            controller.close();
+            return;
+          }
+          sent = true;
+          controller.enqueue(bomb);
+        },
+        cancel() {
+          cancelled = true;
+        },
       },
-      cancel() {
-        cancelled = true;
-      },
-    });
+      { highWaterMark: 0 },
+    );
     const { response } = await routed('GET', answer(body, 'br'), { cspNonce: true });
 
     expect(response.status).toBe(UNAVAILABLE_STATUS);
@@ -428,6 +460,45 @@ describe('encoded terminal gate HTML nonce', () => {
 
     expect(nonce).toBeDefined();
     expect(text).toContain(`nonce="${nonce ?? ''}"`);
+  });
+
+  it('does not charge downstream client pauses between pulls against GATE_TIMEOUT_MS', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+    const fullCompressed = encoded(savedDocument(32), ['gzip']);
+    const body = fragments(fullCompressed, 128, { highWaterMark: 0 });
+    const { pointer } = await seedSite({
+      document: pprDocument(),
+      pathname: POST,
+      dynamicRoutes: [{ sourceRegex: POST_PATTERN, route: POST, gated: POST }],
+      gates: { [POST]: GATE },
+      gatedPathnames: { [POST]: POST },
+    });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request: navigation('/posts/abc'),
+      url: new URL('https://site.example/posts/abc'),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) }),
+      host: {
+        ...standaloneHost(env),
+        gates: { answer: () => Promise.resolve(answer(body, 'gzip')) },
+      },
+      pointer: { ...pointer, cspNonce: true },
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+
+    expect(response.status).toBe(200);
+
+    const text = await readWithDownstreamPause(response, GATE_TIMEOUT_MS * 2);
+    await waitOnExecutionContext(ctx);
+    const nonce = policyNonce(response);
+
+    expect(nonce).toBeDefined();
+    expect(text).toContain(`nonce="${nonce ?? ''}"`);
+    expect(text).not.toContain(`nonce="${KEPT_NONCE}"`);
   });
 
   it('answers 503 when an encoded gate document fails before completing', async () => {

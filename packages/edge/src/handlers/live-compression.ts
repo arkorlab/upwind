@@ -502,6 +502,7 @@ function decompressBrotli(
       cancelled = true;
       stepChunks = [];
       resolvePending?.();
+      stream.close();
     },
   });
   return body.pipeThrough(transform);
