@@ -612,7 +612,7 @@ describe('a gate that decides a request that takes a shell alone', () => {
   it.each([
     [
       'bare capture header without credentials',
-      () => {
+      (): IncomingRequest => {
         return new Request('https://site.example/posts/abc', {
           headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE },
         });
@@ -669,7 +669,7 @@ describe('a gate that decides a request that takes a shell alone', () => {
         },
       },
     };
-    const request = new Request('https://site.example/posts/abc', {
+    const request: IncomingRequest = new Request('https://site.example/posts/abc', {
       headers: {
         [GATE_CAPTURE_HEADER]: GATE_CAPTURE,
         cookie: `${hostCookie}=secret`,

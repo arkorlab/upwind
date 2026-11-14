@@ -10,7 +10,7 @@ import { EXTERNAL_REWRITE_TIMEOUT_MS } from '../src/handlers/external-rewrite-ta
 import { followExternalRewrite } from '../src/handlers/middleware.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { EdgeMetric } from '../src/observability/metrics.ts';
-import { forwardingFor } from '../src/request-context.ts';
+import { forwardingFor, type IncomingRequest } from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import type { EdgeContext } from '../src/strategies/context.ts';
@@ -163,7 +163,7 @@ describe('followExternalRewrite target refusal and timeout bounds', () => {
       method: 'POST',
       body,
       duplex: 'half',
-    } as RequestInit);
+    } as RequestInit) as IncomingRequest;
     const fetched: string[] = [];
     const baseHost = standaloneHost(env);
     const runtime = standaloneRuntime(env, {
@@ -205,7 +205,12 @@ describe('followExternalRewrite target refusal and timeout bounds', () => {
         requestHeaders: new Headers(),
         responseHeaders: new Headers(),
       },
-      { pathname: '/upload', middlewareMs: 1, dispatches: 1, configured: { headers: {} } },
+      {
+        pathname: '/upload',
+        middlewareMs: 1,
+        dispatches: 1,
+        configured: { headers: {}, conditioned: false },
+      },
     );
     await waitOnExecutionContext(ctx);
 

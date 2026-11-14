@@ -411,15 +411,109 @@ export function onTheWayOut(
   return body;
 }
 
+function decompressBrotli(
+  body: ReadableStream<Uint8Array>,
+  maxOutputBytes?: number,
+): ReadableStream<Uint8Array> {
+  const stream = createBrotliDecompress();
+  let outputBytes = 0;
+  let cancelled = false;
+  let failure: Error | undefined;
+  let rejectPending: ((reason: Error) => void) | undefined;
+  let resolvePending: (() => void) | undefined;
+  let stepChunks: Uint8Array[] = [];
+  const runStep = (invoke: (done: () => void) => void): Promise<undefined> => {
+    if (failure !== undefined) {
+      return Promise.reject(failure);
+    }
+    return new Promise<undefined>((resolve, reject) => {
+      resolvePending = () => {
+        resolvePending = undefined;
+        rejectPending = undefined;
+        resolve(undefined);
+      };
+      rejectPending = (reason: Error) => {
+        resolvePending = undefined;
+        rejectPending = undefined;
+        reject(reason);
+      };
+      invoke(() => {
+        if (failure === undefined) {
+          resolvePending?.();
+        } else {
+          rejectPending?.(failure);
+        }
+      });
+    });
+  };
+  const transform = new TransformStream<Uint8Array, Uint8Array>({
+    start() {
+      stream.on('data', (chunk) => {
+        if (cancelled || failure !== undefined) {
+          return;
+        }
+        outputBytes += chunk.byteLength;
+        if (maxOutputBytes !== undefined && outputBytes > maxOutputBytes) {
+          stepChunks = [];
+          failure = new RangeError('decoded stream exceeded byte limit');
+          rejectPending?.(failure);
+          stream.close();
+          return;
+        }
+        stepChunks.push(new Uint8Array(chunk));
+      });
+      stream.on('error', (error) => {
+        failure ??= error;
+        stepChunks = [];
+        rejectPending?.(failure);
+      });
+    },
+    async transform(chunk, controller) {
+      await runStep((done) => {
+        stream.write(chunk);
+        stream.flush(constants.BROTLI_OPERATION_FLUSH, done);
+      });
+      if (cancelled) {
+        stepChunks = [];
+        return;
+      }
+      const produced = stepChunks;
+      stepChunks = [];
+      for (const out of produced) {
+        controller.enqueue(out);
+      }
+    },
+    async flush(controller) {
+      await runStep((done) => {
+        stream.on('end', done);
+        stream.end();
+      });
+      if (cancelled) {
+        stepChunks = [];
+        return;
+      }
+      const produced = stepChunks;
+      stepChunks = [];
+      for (const out of produced) {
+        controller.enqueue(out);
+      }
+    },
+    cancel() {
+      cancelled = true;
+      stepChunks = [];
+      resolvePending?.();
+    },
+  });
+  return body.pipeThrough(transform);
+}
+
 /** A gate's encoded bytes are decoded before its per-response HTML nonce can be rewritten. */
 export function decompressLive(
   body: ReadableStream<Uint8Array>,
   encoding: 'br' | 'gzip' | 'deflate',
+  maxOutputBytes?: number,
 ): ReadableStream<Uint8Array> {
   return encoding === 'br'
-    ? compressWith(body, {
-        stream: createBrotliDecompress(),
-        flushKind: constants.BROTLI_OPERATION_FLUSH,
-      })
+    ? decompressBrotli(body, maxOutputBytes)
     : body.pipeThrough(new DecompressionStream(encoding));
 }

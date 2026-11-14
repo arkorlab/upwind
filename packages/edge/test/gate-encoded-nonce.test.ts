@@ -1,5 +1,11 @@
 // eslint-disable-next-line no-restricted-imports, import-x/no-nodejs-modules -- the Workers compatibility module creates and reads the gate's saved encoded fixture bytes.
-import { brotliCompressSync, brotliDecompressSync, deflateSync, gzipSync } from 'node:zlib';
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  deflateSync,
+  gzipSync,
+} from 'node:zlib';
 
 import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
 import { MAX_GATE_SHELL_BYTES } from '@stayingupwind/host/bindings';
@@ -300,36 +306,128 @@ describe('encoded terminal gate HTML nonce', () => {
     },
   );
 
-  it('aborts an oversized decompressed gzip document within MAX_GATE_SHELL_BYTES', async () => {
-    const oversized = Uint8Array.from(
-      gzipSync(new Uint8Array(MAX_GATE_SHELL_BYTES * 2).fill(0x41)),
+  it.each(['gzip', 'br'] as const)(
+    'aborts an oversized streamed %s document mid-stream within MAX_GATE_SHELL_BYTES',
+    async (coding) => {
+      const uncompressed = new Uint8Array(MAX_GATE_SHELL_BYTES * 2);
+      let state = 17;
+      for (let index = 0; index < uncompressed.byteLength; index += 1) {
+        state = (state * 131 + 17) % 65_521;
+        uncompressed[index] = 65 + (state % 26);
+      }
+      const oversized = Uint8Array.from(
+        coding === 'br'
+          ? brotliCompressSync(uncompressed, {
+              params: { [constants.BROTLI_PARAM_QUALITY]: 1 },
+            })
+          : gzipSync(uncompressed),
+      );
+      let at = 0;
+      let cancelled = false;
+      const chunkSize = 256;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (at >= oversized.byteLength) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(oversized.subarray(at, at + chunkSize));
+            at = Math.min(at + chunkSize, oversized.byteLength);
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      );
+
+      await expect(routed('GET', answer(body, coding), { cspNonce: true })).rejects.toThrow(
+        /exceeded/u,
+      );
+      expect(cancelled).toBe(true);
+      expect(at).toBeLessThan(oversized.byteLength);
+    },
+  );
+
+  it('refuses a high-ratio single-slice br decompression bomb before headers leave', async () => {
+    const bomb = Uint8Array.from(
+      brotliCompressSync(new Uint8Array(MAX_GATE_SHELL_BYTES * 2).fill(0x41)),
     );
-    let at = 0;
     let cancelled = false;
-    const chunkSize = 256;
-    const body = new ReadableStream<Uint8Array>(
-      {
-        pull(controller) {
-          if (at >= oversized.byteLength) {
-            controller.close();
-            return;
-          }
-          controller.enqueue(oversized.subarray(at, at + chunkSize));
-          at = Math.min(at + chunkSize, oversized.byteLength);
-        },
-        cancel() {
-          cancelled = true;
-        },
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent) {
+          controller.close();
+          return;
+        }
+        sent = true;
+        controller.enqueue(bomb);
       },
-      { highWaterMark: 0 },
-    );
-    const { response } = await routed('GET', answer(body, 'gzip'), { cspNonce: true });
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { response } = await routed('GET', answer(body, 'br'), { cspNonce: true });
 
     expect(response.status).toBe(UNAVAILABLE_STATUS);
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
     expect(response.headers.has(CSP)).toBe(false);
     expect(cancelled).toBe(true);
-    expect(at).toBeLessThan(oversized.byteLength);
+  });
+
+  it('streams the first decoded chunk before the remainder of a gated HTML response arrives', async () => {
+    const headBytes = gzipSync(
+      new TextEncoder().encode(`<html><head><script nonce="${KEPT_NONCE}">1</script></head><body>`),
+    );
+    const { promise: releaseTail, resolve: sendTail } = Promise.withResolvers<undefined>();
+    let phase = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (phase === 0) {
+          phase = 1;
+          controller.enqueue(Uint8Array.from(headBytes));
+          return;
+        }
+        await releaseTail;
+        controller.close();
+      },
+    });
+    const { pointer } = await seedSite({
+      document: pprDocument(),
+      pathname: POST,
+      dynamicRoutes: [{ sourceRegex: POST_PATTERN, route: POST, gated: POST }],
+      gates: { [POST]: GATE },
+      gatedPathnames: { [POST]: POST },
+    });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request: navigation('/posts/abc'),
+      url: new URL('https://site.example/posts/abc'),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) }),
+      host: {
+        ...standaloneHost(env),
+        gates: { answer: () => Promise.resolve(answer(body, 'gzip')) },
+      },
+      pointer: { ...pointer, cspNonce: true },
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+
+    expect(response.status).toBe(200);
+    expect(phase).toBe(1);
+
+    sendTail(undefined);
+    const text = await response.text();
+    await waitOnExecutionContext(ctx);
+    const nonce = policyNonce(response);
+
+    expect(nonce).toBeDefined();
+    expect(text).toContain(`nonce="${nonce ?? ''}"`);
   });
 
   it('answers 503 when an encoded gate document fails before completing', async () => {
