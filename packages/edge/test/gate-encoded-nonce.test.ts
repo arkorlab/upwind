@@ -189,6 +189,7 @@ const CASES = [
 
 describe('encoded terminal gate HTML nonce', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -346,7 +347,7 @@ describe('encoded terminal gate HTML nonce', () => {
     expect(response.headers.has(CSP)).toBe(false);
   });
 
-  it('aborts a stalled encoded gate document once GATE_TIMEOUT_MS has elapsed', async () => {
+  it('refuses an encoded gate document immediately when GATE_TIMEOUT_MS is already spent', async () => {
     let cancelled = false;
     let reads = 0;
     vi.spyOn(performance, 'now').mockImplementation(() => {
@@ -354,7 +355,7 @@ describe('encoded terminal gate HTML nonce', () => {
       return reads * (GATE_TIMEOUT_MS + 1);
     });
     const stalled = new ReadableStream<Uint8Array>({
-      pull() {
+      pull: () => {
         return new Promise<void>(() => {
           /* Never yields a chunk. */
         });
@@ -364,6 +365,39 @@ describe('encoded terminal gate HTML nonce', () => {
       },
     });
     const { response } = await routed('GET', answer(stalled, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+  });
+
+  it('aborts an in-flight stalled encoded gate document when the GATE_TIMEOUT_MS timer fires', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+    let cancelled = false;
+    const { promise: pulled, resolve: markPulled } = Promise.withResolvers<undefined>();
+    const { promise: onCancel, resolve: markCancelled } = Promise.withResolvers<undefined>();
+    const stalled = new ReadableStream<Uint8Array>({
+      pull() {
+        markPulled(undefined);
+        return new Promise<void>(() => {
+          /* Never yields a chunk. */
+        });
+      },
+      cancel() {
+        cancelled = true;
+        markCancelled(undefined);
+      },
+    });
+    const pending = routed('GET', answer(stalled, 'gzip'), { cspNonce: true });
+    await pulled;
+    await vi.advanceTimersByTimeAsync(GATE_TIMEOUT_MS - 1);
+
+    expect(cancelled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const { response } = await pending;
+    await onCancel;
 
     expect(response.status).toBe(UNAVAILABLE_STATUS);
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');

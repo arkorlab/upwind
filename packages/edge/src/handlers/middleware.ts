@@ -11,13 +11,10 @@ import {
   MIDDLEWARE_ONLY_HEADER,
   middlewareApplies,
   type MiddlewareResult,
-  PLATFORM_REQUEST_HEADERS,
 } from '@stayingupwind/core/paas';
 import {
   dataRequestHeaders,
   EDGE_DEBUG_HEADER,
-  HOP_BY_HOP_HEADERS,
-  PLATFORM_HEADER_PREFIX,
   sanitizePassthroughHeaders,
   keptByNobody,
   unsharedUnlessPublic,
@@ -34,7 +31,11 @@ import { stampLogCorrelation } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { externalRewriteRefused, externalRewriteSignal } from './external-rewrite-target.ts';
+import {
+  EXTERNAL_REWRITE_TIMEOUT_MS,
+  externalRewriteHeaders,
+  externalRewriteRefused,
+} from './external-rewrite-target.ts';
 import { observeRequestMetric } from './observer.ts';
 import {
   anonymousRequest,
@@ -153,7 +154,6 @@ const MAX_REASON_LENGTH = 200;
 const REWRITE_HEADER = 'x-middleware-rewrite';
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONTENT_TYPE_HEADER = 'content-type';
-const FORWARDED_HOST_HEADER = 'x-forwarded-host';
 const HTTP_OK = 200;
 const EXTERNAL_REWRITE = 'external-rewrite';
 const EXTERNAL_REWRITE_UNAVAILABLE = 'external-rewrite-unavailable';
@@ -652,28 +652,13 @@ function unreachableRewrite(
 }
 
 /**
- * What of a request is never another origin's: the edge's own headers (`PLATFORM_HEADER_PREFIX`, the
- * runtime's `PLATFORM_REQUEST_HEADERS` among them), what belongs to one connection alone
- * (`HOP_BY_HOP_HEADERS`, and whatever the request's `Connection` names, `nominatedBy`), and the
- * site's hostname, which the target's URL replaces.
- */
-function notForAnotherOrigin(name: string): boolean {
-  return (
-    name === 'host' ||
-    HOP_BY_HOP_HEADERS.includes(name) ||
-    PLATFORM_REQUEST_HEADERS.includes(name) ||
-    name.startsWith(PLATFORM_HEADER_PREFIX)
-  );
-}
-
-/**
  * A rewrite to another origin, followed from here: the middleware has run once, and running it
  * again in the application's Worker would repeat whatever it did on the way. The request goes out
  * as Next.js's proxy sends one: the request the middleware was handed, as the middleware left it
  * (`readAnswer`) — so without the host's credentials (`EdgeHost.credentials`, its cookies and
  * headers), which never reached the middleware, and with the edge's forwarding headers rather than
  * a client's — under `x-forwarded-host` naming the host the client asked on, whatever the middleware
- * made of it, and without what is never another origin's (`notForAnotherOrigin`). What comes back
+ * made of it, and without what is never another origin's (`externalRewriteHeaders`). What comes back
  * carries the headers the rules of `next.config` and the middleware set (`layRouted`) — as the
  * runtime answers the same rewrite.
  */
@@ -690,27 +675,25 @@ export async function followExternalRewrite(
   }
   // What the middleware was handed, which matters most here: this request goes to an origin the
   // *application* named, further from us than its own Worker rather than nearer.
-  const headers = new Headers();
-  const nominated = nominatedBy(rewrite.requestHeaders);
-  for (const [name, value] of rewrite.requestHeaders) {
-    if (!notForAnotherOrigin(name) && nominated?.has(name) !== true) {
-      headers.append(name, value);
-    }
-  }
-  // As Next.js's proxy names it, over whatever the request carried (`proxyRequest`).
-  headers.set(FORWARDED_HOST_HEADER, edge.forwarding.previewHost);
+  const headers = externalRewriteHeaders(rewrite.requestHeaders, edge.forwarding.previewHost);
   let upstream: Response;
   const startedAt = edge.runtime.now();
+  const timeoutController = new AbortController();
+  const timer = setTimeout(() => {
+    timeoutController.abort();
+  }, EXTERNAL_REWRITE_TIMEOUT_MS);
+  const signal = AbortSignal.any([request.signal, timeoutController.signal]);
   try {
-    // Bounded to Next.js's default 30-second proxy timeout alongside client cancellation so a
-    // stalled external origin cannot pin the edge isolate indefinitely.
+    // Bounded to Next.js's default 30-second proxy header timeout alongside client cancellation so
+    // a stalled external origin cannot pin the edge isolate indefinitely, while clearing the timer
+    // once headers arrive lets streamed response bodies continue past 30 seconds.
     upstream = await edge.runtime.fetchImpl(
       new Request(rewrite.url.href, {
         method: request.method,
         headers,
         body: request.body,
         redirect: 'manual',
-        signal: externalRewriteSignal(request.signal),
+        signal,
       }),
     );
   } catch {
@@ -720,6 +703,8 @@ export async function followExternalRewrite(
     const fetched = { ms: edge.runtime.now() - startedAt };
     recordMiddlewareAnswer(edge, EXTERNAL_REWRITE_UNAVAILABLE, { ...answered, fetched });
     return unreachableRewrite(edge, rewrite, answered.configured);
+  } finally {
+    clearTimeout(timer);
   }
   const fetched = { ms: edge.runtime.now() - startedAt };
   // As a Worker's answer is taken (`handlePassthrough`): cookies scoped to the host the client

@@ -1,14 +1,46 @@
 import { isLocalAddress } from '@stayingupwind/core/images';
+import { PLATFORM_REQUEST_HEADERS } from '@stayingupwind/core/paas';
+import { HOP_BY_HOP_HEADERS, PLATFORM_HEADER_PREFIX } from '@stayingupwind/core/request';
 import { dnsSpelling, isUnderAnyDomain } from '@stayingupwind/host/domains';
 
 import type { EdgeContext } from '../strategies/context.ts';
+import { nominatedBy } from './responses.ts';
 
-/** How long the edge waits on an origin a middleware rewrote to, matching Next.js's default proxy timeout. */
+/** How long the edge waits on an origin's response headers on an external rewrite, matching Next.js's default proxy timeout. */
 export const EXTERNAL_REWRITE_TIMEOUT_MS = 30_000;
 
-/** Combine the visitor's cancellation signal with the external rewrite upstream timeout. */
-export function externalRewriteSignal(clientSignal: AbortSignal): AbortSignal {
-  return AbortSignal.any([clientSignal, AbortSignal.timeout(EXTERNAL_REWRITE_TIMEOUT_MS)]);
+const FORWARDED_HOST_HEADER = 'x-forwarded-host';
+
+/**
+ * What of a request is never another origin's: the edge's own headers (`PLATFORM_HEADER_PREFIX`, the
+ * runtime's `PLATFORM_REQUEST_HEADERS` among them), what belongs to one connection alone
+ * (`HOP_BY_HOP_HEADERS`, and whatever the request's `Connection` names, `nominatedBy`), and the
+ * site's hostname, which the target's URL replaces.
+ */
+function notForAnotherOrigin(name: string): boolean {
+  return (
+    name === 'host' ||
+    HOP_BY_HOP_HEADERS.includes(name) ||
+    PLATFORM_REQUEST_HEADERS.includes(name) ||
+    name.startsWith(PLATFORM_HEADER_PREFIX)
+  );
+}
+
+/**
+ * Forwarded request headers for an external rewrite: what the middleware left on the request,
+ * minus hop-by-hop and edge-internal fields (`notForAnotherOrigin`), with `x-forwarded-host`
+ * naming `previewHost` as Next.js's proxy sets it.
+ */
+export function externalRewriteHeaders(requestHeaders: Headers, previewHost: string): Headers {
+  const headers = new Headers();
+  const nominated = nominatedBy(requestHeaders);
+  for (const [name, value] of requestHeaders) {
+    if (!notForAnotherOrigin(name) && nominated?.has(name) !== true) {
+      headers.append(name, value);
+    }
+  }
+  headers.set(FORWARDED_HOST_HEADER, previewHost);
+  return headers;
 }
 
 /**

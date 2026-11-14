@@ -678,10 +678,13 @@ function documentGateOf(input: GateInput, gate: RouteGate): string | undefined {
 }
 
 /**
- * Whether `input` is a capture probe of the gate's authority (`GATE_CAPTURE_HEADER`): a
- * credentialed `GET` that is no router or route-body request. `gateRequest` strips the gate
- * protocol's headers before asking, so a bare `GATE_CAPTURE_HEADER` from an anonymous visitor
- * reaches the gate indistinguishable from any other anonymous request and cannot ask for one.
+ * Whether `input` could be a capture probe from the gate's authority (`GATE_CAPTURE_HEADER`): a
+ * `GET` that carries application credentials (`carriesApplicationCredentials`) and is no router or
+ * route-body request (`hasRouteBodyControlHeader`). Because the gate authority belongs to the
+ * application, only the application's gate itself can verify that credential (`takesShell` browser
+ * navigations already ask `documentGates`); the edge filters out bare, host-credential-only, `HEAD`
+ * and router-payload probes up front, since `gateRequest` strips the gate protocol's headers before
+ * asking and an uncredentialed probe could never be recognized by the gate.
  */
 function asksCapture(input: GateInput): boolean {
   const { request, host } = input;

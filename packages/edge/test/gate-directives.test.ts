@@ -612,26 +612,29 @@ describe('a gate that decides a request that takes a shell alone', () => {
   it.each([
     [
       'bare capture header without credentials',
-      () =>
-        new Request('https://site.example/posts/abc', {
+      () => {
+        return new Request('https://site.example/posts/abc', {
           headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE },
-        }),
+        });
+      },
     ],
     [
       'HEAD with capture header and authorization',
-      () =>
-        navigation('/posts/abc', {
+      () => {
+        return navigation('/posts/abc', {
           method: 'HEAD',
           headers: { [GATE_CAPTURE_HEADER]: GATE_CAPTURE, authorization: 'Bearer gate-probe' },
-        }),
+        });
+      },
     ],
     [
       'RSC payload request with capture header and authorization',
-      () =>
-        payloadRequest({
+      () => {
+        return payloadRequest({
           [GATE_CAPTURE_HEADER]: GATE_CAPTURE,
           authorization: 'Bearer gate-probe',
-        }),
+        });
+      },
     ],
   ])('lets %s go on unasked once document scope is remembered', async (_case, request) => {
     const memory = createEdgeMemory(() => NOW);

@@ -116,6 +116,7 @@ async function rewriteTo(
 
 describe('followExternalRewrite target refusal and timeout bounds', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -153,9 +154,7 @@ describe('followExternalRewrite target refusal and timeout bounds', () => {
   it('releases the request body stream when an external rewrite target is refused', async () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
-      pull() {
-        return Promise.resolve();
-      },
+      pull: () => Promise.resolve(),
       cancel() {
         cancelled = true;
       },
@@ -215,46 +214,79 @@ describe('followExternalRewrite target refusal and timeout bounds', () => {
     expect(cancelled).toBe(true);
   });
 
-  it('combines request.signal with a 30-second timeout signal on allowed external rewrites', async () => {
-    const timeoutController = new AbortController();
-    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutController.signal);
-    const { response, fetched } = await rewriteTo('https://elsewhere.example/feed', {
-      origin: (outbound) => {
-        expect(outbound.signal.aborted).toBe(false);
-        return new Response('ok');
-      },
-    });
-
-    expect(response.status).toBe(OK_STATUS);
-    expect(timeoutSpy).toHaveBeenCalledWith(EXTERNAL_REWRITE_TIMEOUT_MS);
-    expect(fetched).toHaveLength(1);
-  });
-
-  it('aborts the outbound fetch and answers 502 when the upstream timeout signal fires', async () => {
-    const timeoutController = new AbortController();
-    vi.spyOn(AbortSignal, 'timeout').mockReturnValue(timeoutController.signal);
+  it('aborts an upstream that never sends headers within 30 seconds and answers 502', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { promise: reached, resolve: reach } = Promise.withResolvers<undefined>();
     let outboundAborted = false;
-    const { response } = await rewriteTo('https://elsewhere.example/stalled', {
+    const pending = rewriteTo('https://elsewhere.example/stalled', {
       origin: (outbound) => {
-        const pending = Promise.withResolvers<Response>();
+        const stalled = Promise.withResolvers<Response>();
         outbound.signal.addEventListener(
           'abort',
           () => {
             outboundAborted = true;
-            pending.reject(new DOMException('The operation timed out.', 'TimeoutError'));
+            stalled.reject(new DOMException('The operation timed out.', 'TimeoutError'));
           },
           { once: true },
         );
-        timeoutController.abort(new DOMException('The operation timed out.', 'TimeoutError'));
-        return pending.promise;
+        reach(undefined);
+        return stalled.promise;
       },
     });
+    await reached;
+    await vi.advanceTimersByTimeAsync(EXTERNAL_REWRITE_TIMEOUT_MS - 1);
+
+    expect(outboundAborted).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const { response } = await pending;
 
     expect(outboundAborted).toBe(true);
     expect(response.status).toBe(BAD_GATEWAY_STATUS);
     expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe(
       'error;reason=external-rewrite-unavailable',
     );
+  });
+
+  it('clears the header timeout once headers arrive so body streaming continues past 30 seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const encoder = new TextEncoder();
+    const { promise: pulled, resolve: markPulled } = Promise.withResolvers<undefined>();
+    const { promise: nextChunk, resolve: sendSecondChunk } = Promise.withResolvers<undefined>();
+    let outboundAborted = false;
+    const { response } = await rewriteTo('https://elsewhere.example/events', {
+      origin: (outbound) => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            outbound.signal.addEventListener(
+              'abort',
+              () => {
+                outboundAborted = true;
+                controller.error(new DOMException('Aborted', 'AbortError'));
+              },
+              { once: true },
+            );
+            controller.enqueue(encoder.encode('first:'));
+          },
+          async pull(controller) {
+            markPulled(undefined);
+            await nextChunk;
+            controller.enqueue(encoder.encode('second'));
+            controller.close();
+          },
+        });
+        return new Response(body, { headers: { 'content-type': 'text/event-stream' } });
+      },
+    });
+    const reading = response.text();
+    await pulled;
+    await vi.advanceTimersByTimeAsync(EXTERNAL_REWRITE_TIMEOUT_MS * 2);
+    sendSecondChunk(undefined);
+    const text = await reading;
+
+    expect(response.status).toBe(OK_STATUS);
+    expect(outboundAborted).toBe(false);
+    expect(text).toBe('first:second');
   });
 
   it('propagates client request.signal cancellation to the outbound rewrite fetch', async () => {
