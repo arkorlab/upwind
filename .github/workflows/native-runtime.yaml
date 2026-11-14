@@ -29,7 +29,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: [24.22.1, 26.13.0]
+        node: [24.22.3, 26.13.1]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
@@ -49,7 +49,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [24.22.1, 26.13.0]
+        node: [24.22.3, 26.13.1]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
