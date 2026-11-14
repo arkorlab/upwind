@@ -32,37 +32,6 @@ export interface AppliedPatch {
   readonly result: PatchResult;
 }
 
-/**
- * The loader's ordered rewrites, also used to prove a chunk's original map will not be loaded.
- * `only` refuses a claim before applying it, so a comparison cannot evaluate a rewrite whose
- * context (the chunk-copy table, for example) has not been built yet.
- */
-export function patchSource(
-  patches: readonly Patch[],
-  ctx: PatchContext,
-  input: { readonly source: string; readonly file: string; readonly only?: ReadonlySet<Patch> },
-  onApplied?: (applied: AppliedPatch) => void,
-): string | undefined {
-  const external = buildPaths(ctx.projectDir, ctx.distDir).external;
-  let source = input.source;
-  let patched = false;
-  for (const patch of patches) {
-    if (
-      (!external && patch.externalOutputOnly === true) ||
-      !patch.target.test(input.file) ||
-      (patch.marker !== undefined && !patch.marker(source))
-    ) {
-      continue;
-    }
-    if (input.only !== undefined && !input.only.has(patch)) return undefined;
-    const result = patch.apply(source, input.file, ctx);
-    onApplied?.({ patch: patch.name, file: input.file, result });
-    source = result.contents;
-    patched = true;
-  }
-  return patched ? source : undefined;
-}
-
 export function patchesPlugin(
   patches: readonly Patch[],
   ctx: PatchContext,
@@ -80,9 +49,18 @@ export function patchesPlugin(
         if (matching.length === 0) {
           return null;
         }
-        const source = await readFile(id, 'utf8');
-        const code = patchSource(matching, ctx, { source, file: id }, onApplied);
-        return code === undefined ? null : { code, moduleType: 'js' };
+        let source = await readFile(id, 'utf8');
+        let patched = false;
+        for (const patch of matching) {
+          if (patch.marker !== undefined && !patch.marker(source)) {
+            continue;
+          }
+          const result = patch.apply(source, id, ctx);
+          onApplied?.({ patch: patch.name, file: id, result });
+          source = result.contents;
+          patched = true;
+        }
+        return patched ? { code: source, moduleType: 'js' } : null;
       },
     },
   };

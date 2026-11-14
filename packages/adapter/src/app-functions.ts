@@ -28,7 +28,7 @@ import { NativeFunctionRequiredError } from './native-loads.ts';
 import { nextClientAssetPrefix } from './node-asset-prefix.ts';
 import type { NodeBuiltFunction } from './node-function.ts';
 import { type BodiesLeftOut, withinTheLimit } from './page-body-layout.ts';
-import { type PatchContext, rewrittenChunk } from './patches/index.ts';
+import type { PatchContext } from './patches/index.ts';
 import { appFunctionLimit, type PlanBudget } from './plan.ts';
 import { sameChunks } from './same-chunks.ts';
 import { carriesMaps, type SourceMapsOption } from './source-maps.ts';
@@ -149,31 +149,24 @@ export async function patchFor(
     table.add(chunk);
   }
   const chunks = [...table];
-  const patch: PatchContext = {
+  return {
     projectDir: context.ctx.projectDir,
     distDir: context.ctx.distDir,
     chunks,
+    copies: await sameChunks(chunks, {
+      carried: carriesMaps(context.sourceMaps),
+      kept: context.keptMaps,
+      ...(context.sourceMaps === 'project' && {
+        project: {
+          projectDir: context.ctx.projectDir,
+          distDir: context.ctx.distDir,
+          outDir: context.outDir,
+        },
+      }),
+    }),
     instrumentation: context.hook.file,
     cacheHandlers: context.cacheHandlers,
     wasm: wasm.chunks,
-  };
-  return {
-    ...patch,
-    copies: await sameChunks(
-      chunks,
-      {
-        carried: carriesMaps(context.sourceMaps),
-        kept: context.keptMaps,
-        ...(context.sourceMaps === 'project' && {
-          project: {
-            projectDir: context.ctx.projectDir,
-            distDir: context.ctx.distDir,
-            outDir: context.outDir,
-          },
-        }),
-      },
-      (source, file) => rewrittenChunk(source, file, patch),
-    ),
     embeddedWasm: await offerEmbeddedWasm(chunks, wasm.collector),
   };
 }

@@ -121,35 +121,20 @@ function withoutFileComments(source: string): string {
 /**
  * Each chunk of `chunks` whose code another of them has, to that other: the first of the ones that
  * share it, in the order of the paths, so the same build always keeps the same file.
- *
- * `rewritten` proves the actual patch loader supplies code without the original map. Only sibling
- * chunks with equal normalized input and output share that proof; ordinary loads keep their maps.
  */
 export async function sameChunks(
   chunks: readonly string[],
   maps: ChunkMaps,
-  rewritten?: (source: string, file: string) => string | undefined,
 ): Promise<ReadonlyMap<string, string>> {
   const firstByCode = new Map<string, string>();
   const copies = new Map<string, string>();
   const ordered = [...new Set(chunks)].toSorted((a, b) => compareCodeUnits(a, b));
   for (const chunk of ordered) {
     const source = await readFile(chunk, 'utf8');
-    const patched = maps.carried ? rewritten?.(source, chunk) : undefined;
-    // A proven patch load supplies code without its original map. Compare both its input and
-    // output, and keep it apart from ordinary mapped loads. Siblings alone may share this proof:
-    // equal relative imports in different directories need not resolve to the same modules.
-    let mapping: string;
-    if (patched === undefined) {
-      const originalMap = maps.carried ? await comparedMap(source, chunk, maps) : '';
-      mapping = `mapped\0${originalMap}`;
-    } else {
-      mapping = `rewritten\0${path.dirname(chunk)}\0${chunkCode(patched)}`;
-    }
     const digest = createHash('sha256')
       .update(chunkCode(source))
       .update('\0')
-      .update(mapping)
+      .update(maps.carried ? await comparedMap(source, chunk, maps) : '')
       .digest('hex');
     const first = firstByCode.get(digest);
     if (first === undefined) {
@@ -302,13 +287,6 @@ function canonicalMap(text: string, file: string, project: ProjectBounds | undef
     return text;
   }
   const fields = map as Record<string, unknown>;
-  // A project-only map with no sources maps every position to nothing. Its unmapped line and
-  // column boundaries carry no frame information, so they cannot keep identical chunks apart.
-  // Whole maps, and project maps retaining any source, still compare every mapping and name.
-  if (project !== undefined && Array.isArray(fields['sources']) && fields['sources'].length === 0) {
-    fields['mappings'] = '';
-    fields['names'] = [];
-  }
   const root = typeof fields['sourceRoot'] === 'string' ? fields['sourceRoot'] : undefined;
   const sources = Array.isArray(fields['sources'])
     ? fields['sources'].map((source: unknown) =>
