@@ -74,6 +74,21 @@ function localRegExpOf(pattern: ImageLocalPattern): RegExp {
   return regexp;
 }
 
+function spellsTrailingDot(source: string): boolean {
+  let index = source.length - 1;
+  while (index >= 0 && (source[index] === ')' || source[index] === '$')) {
+    index -= 1;
+  }
+  if (index < 1 || source[index] !== '.') {
+    return false;
+  }
+  let slashes = 0;
+  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
+    slashes += 1;
+  }
+  return slashes % 2 === 1;
+}
+
 function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
   if (pattern.protocol !== undefined && pattern.protocol !== url.protocol.replace(/:$/u, '')) {
     return false;
@@ -83,10 +98,14 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
   }
   const regexps = remoteRegExpsOf(pattern);
   const normalizedHostname = normalizeImageHostname(url.hostname);
-  const rawHostname = url.hostname.toLowerCase();
   if (
     !testWithin(regexps.hostname, normalizedHostname) &&
-    (rawHostname === normalizedHostname || !testWithin(regexps.hostname, rawHostname))
+    !(
+      normalizedHostname !== '' &&
+      url.hostname.endsWith('.') &&
+      spellsTrailingDot(pattern.hostname) &&
+      testWithin(regexps.hostname, `${normalizedHostname}.`)
+    )
   ) {
     return false;
   }

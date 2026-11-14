@@ -328,7 +328,7 @@ describe('parseImageRequest', () => {
     expect(result.kind === 'ok' && result.params.quality).toBe(33);
   });
 
-  it('matches normalized and stored trailing-dot remotePatterns while blocking trailing-dot local hosts', () => {
+  it('matches normalized and stored trailing-dot remotePatterns while preserving exclusions and local blocks', () => {
     const byDomain: ImagesConfig = { ...CONFIG, domains: ['allowed.example.com.'] };
     const withoutDot: ImagesConfig = {
       ...CONFIG,
@@ -339,7 +339,13 @@ describe('parseImageRequest', () => {
     const withDot: ImagesConfig = {
       ...CONFIG,
       remotePatterns: [
-        { protocol: 'https', hostname: String.raw`^cdn\.example\.$`, pathname: '^.*$' },
+        { protocol: 'https', hostname: String.raw`^(?:^(?:cdn\.example\.)$)$`, pathname: '^.*$' },
+      ],
+    };
+    const negated: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: '^.*$' },
       ],
     };
     const anyHttp: ImagesConfig = {
@@ -347,6 +353,7 @@ describe('parseImageRequest', () => {
       remotePatterns: [{ protocol: 'http', hostname: '^.*$', pathname: '^.*$' }],
     };
     const evilDot = remote('https://evil.example./a.png');
+    const excludedDot = remote('https://evil.com./a.png');
     const loopbackDot = remote('http://127.0.0.1./a.png');
     const localhostDot = remote('http://localhost./a.png');
 
@@ -355,6 +362,7 @@ describe('parseImageRequest', () => {
     expect(parse(remote('https://cdn.example./a.png'), null, withoutDot).kind).toBe('ok');
     expect(parse(remote('https://cdn.example./a.png'), null, withDot).kind).toBe('ok');
     expect(errorOf(parse(evilDot, null, withoutDot))).toBe('"url" parameter is not allowed');
+    expect(errorOf(parse(excludedDot, null, negated))).toBe('"url" parameter is not allowed');
     expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe('"url" parameter is not allowed');
     expect(errorOf(parse(localhostDot, null, anyHttp))).toBe('"url" parameter is not allowed');
   });
