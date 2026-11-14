@@ -180,8 +180,8 @@ catalogs:
       specifier: 0.3.31
       version: 0.3.31
     '@next/routing':
-      specifier: 16.4.5
-      version: 16.4.5
+      specifier: 16.4.6
+      version: 16.4.6
     '@oxc-project/types':
       specifier: 0.156.0
       version: 0.156.0
@@ -616,7 +616,7 @@ importers:
     dependencies:
       '@next/routing':
         specifier: 'catalog:'
-        version: 16.4.5
+        version: 16.4.6
       '@stayingupwind/core':
         specifier: workspace:*
         version: link:../core
@@ -1394,8 +1394,8 @@ packages:
   '@next/env@16.4.5':
     resolution: {integrity: sha512-JwSPwpdkZL5VMl2jA/q+JI8MZdweAL3xmw5/tb9y/TLtmS0YXZnmYDzSihwk8xTj1OL+WM53gTqaj96yuLp6Xw==}
 
-  '@next/routing@16.4.5':
-    resolution: {integrity: sha512-5cR/AKkAr/WpfYKxdlDpOmxtNGo/4Ad+6Mr1aRzOzSb37jEM9Xffh3fSFyMlqFh/yiMw7ehbktZk41V2m6hZpQ==}
+  '@next/routing@16.4.6':
+    resolution: {integrity: sha512-25HxdlDhz37j9R50L1ULMtjzw3ybqQP4dQTr5L2FgEVD6y7LBAJrPmz1javAHj+gyKABb/FMWYPPkyU0xHsp5w==}
 
   '@next/swc-darwin-arm64@16.4.3':
     resolution: {integrity: sha512-4yq5EXBt+VDtAZwTyfijaFp5D2C5oz3Ikw5a2kiX2K9nw72vrZX2q5UuAlkPtUMO1tQz6JTKpaKWjS7OOefTDQ==}
@@ -4235,7 +4235,7 @@ snapshots:
 
   '@next/env@16.4.5': {}
 
-  '@next/routing@16.4.5': {}
+  '@next/routing@16.4.6': {}
 
   '@next/swc-darwin-arm64@16.4.3':
     optional: true
