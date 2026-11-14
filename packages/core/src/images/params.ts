@@ -1,6 +1,6 @@
 import { testWithin } from '../request/pattern-budget.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
-import { isLocalAddress } from './local-address.ts';
+import { isLocalAddress, normalizeImageHostname } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';
 
 /**
@@ -82,7 +82,7 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
     return false;
   }
   const regexps = remoteRegExpsOf(pattern);
-  if (!testWithin(regexps.hostname, url.hostname)) {
+  if (!testWithin(regexps.hostname, normalizeImageHostname(url.hostname))) {
     return false;
   }
   if (pattern.search !== undefined && pattern.search !== url.search) {
@@ -100,14 +100,27 @@ function matchesLocalPattern(pattern: ImageLocalPattern, url: URL): boolean {
 
 /** A pathname parsed the way Next.js parses one: against a placeholder origin it never uses. */
 const LOCAL_BASE = 'https://n';
+const NON_ASCII_HOST = /\P{ASCII}/u;
+const NOT_HOST_NAME = /[\s#%/:<>?@[\\\]^|]/u;
+
+function normalizedConfiguredDomain(domain: string): string {
+  if (NON_ASCII_HOST.test(domain) && !NOT_HOST_NAME.test(domain)) {
+    const probe = `http://${domain}`;
+    if (URL.canParse(probe)) {
+      return normalizeImageHostname(new URL(probe).hostname);
+    }
+  }
+  return normalizeImageHostname(domain);
+}
 
 function localAllowed(config: ImagesConfig, url: URL): boolean {
   return config.localPatterns.some((pattern) => matchesLocalPattern(pattern, url));
 }
 
 function remoteAllowed(config: ImagesConfig, url: URL): boolean {
+  const hostname = normalizeImageHostname(url.hostname);
   return (
-    config.domains.includes(url.hostname) ||
+    config.domains.some((domain) => normalizedConfiguredDomain(domain) === hostname) ||
     config.remotePatterns.some((pattern) => matchesRemotePattern(pattern, url))
   );
 }

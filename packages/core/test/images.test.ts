@@ -328,6 +328,22 @@ describe('parseImageRequest', () => {
     expect(result.kind === 'ok' && result.params.quality).toBe(33);
   });
 
+  it('normalizes trailing FQDN dots on configured domains and remote hostnames', () => {
+    const byDomain: ImagesConfig = { ...CONFIG, domains: ['allowed.example.com.'] };
+    const negated: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: '^.*$' },
+      ],
+    };
+    const evilQuery = remote('https://evil.com./a.png');
+
+    expect(parse(remote('https://allowed.example.com/a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(remote('https://allowed.example.com./a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(remote('https://avatars.githubusercontent.com./u/1')).kind).toBe('ok');
+    expect(errorOf(parse(evilQuery, null, negated))).toBe('"url" parameter is not allowed');
+  });
+
   it('keeps the source format for a client that names none offered', () => {
     const result = parse('url=%2Fa.png&w=64&q=75', 'image/*,*/*;q=0.8');
 
@@ -386,6 +402,8 @@ describe('isLocalAddress', () => {
     ['[2606:4700::1111]', false],
     ['localhost', true],
     ['localhost.', true],
+    ['localhost..', true],
+    ['127.0.0.1.', true],
     ['app.localhost', true],
     ['app.localhost.', true],
     ['LOCALHOST', true],

@@ -224,6 +224,8 @@ function botsRegexOf(pattern: string): RegExp | undefined {
   return compiledBots.get(pattern);
 }
 
+const MAX_TESTED_USER_AGENT_LENGTH = 512;
+
 /**
  * Whether Next.js sends this visitor blocking metadata rather than streaming it: a user agent the
  * application's `htmlLimitedBots` names, tested as Next.js tests it — case-insensitive, anywhere in
@@ -239,7 +241,7 @@ export function wantsBlockingMetadata(request: Request, pattern: string | undefi
   if (pattern === undefined || pattern === '') {
     return isHtmlLimitedBotUserAgent(userAgent);
   }
-  return botsRegexOf(pattern)?.test(userAgent) ?? false;
+  return botsRegexOf(pattern)?.test(userAgent.slice(0, MAX_TESTED_USER_AGENT_LENGTH)) ?? false;
 }
 
 /**

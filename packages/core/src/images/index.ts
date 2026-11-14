@@ -30,6 +30,6 @@ export {
   upstreamMaxAge,
 } from './headers.ts';
 export { MAX_SOURCE_BYTES, sourceSizeLimit } from './limit.ts';
-export { isLocalAddress } from './local-address.ts';
+export { isLocalAddress, normalizeImageHostname } from './local-address.ts';
 export { negotiateImageFormat } from './negotiate.ts';
 export { type ImageRequestParams, type ImageRequestResult, parseImageRequest } from './params.ts';

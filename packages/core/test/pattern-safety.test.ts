@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { bundleConfigSchema } from '../src/bundle/schema.ts';
 import {
   unsafeRoutePatternReason,
   unsafeSourcePatternReason,
@@ -270,4 +271,34 @@ describe('unsafeSourcePatternReason', () => {
   it('leaves a source that does not compile to the check that says so', () => {
     expect(unsafeSourcePatternReason('(unclosed')).toBeUndefined();
   });
+});
+
+describe('bundleConfigSchema htmlLimitedBots', () => {
+  const baseConfig = {
+    basePath: '',
+    trailingSlash: false,
+    skipTrailingSlashRedirect: false,
+    poweredByHeader: false,
+  };
+
+  it.each(['MyBot|Discordbot', '.*', '', undefined])(
+    'admits safe or unset htmlLimitedBots value %s',
+    (htmlLimitedBots) => {
+      const result = bundleConfigSchema.safeParse({
+        ...baseConfig,
+        ...(htmlLimitedBots !== undefined && { htmlLimitedBots }),
+      });
+
+      expect(result.success).toBe(true);
+    },
+  );
+
+  it.each(['(a+)+', '(a|aa)+', '(?:MyBot|Crawler+)+', String.raw`^\/(?:aA+)+$`, '(unclosed'])(
+    'rejects unsafe or invalid htmlLimitedBots pattern %s',
+    (htmlLimitedBots) => {
+      const result = bundleConfigSchema.safeParse({ ...baseConfig, htmlLimitedBots });
+
+      expect(result.success).toBe(false);
+    },
+  );
 });
