@@ -48,7 +48,7 @@ export function patchSource(
   let patched = false;
   for (const patch of patches) {
     if (
-      (patch.externalOutputOnly === true && !external) ||
+      (!external && patch.externalOutputOnly === true) ||
       !patch.target.test(input.file) ||
       (patch.marker !== undefined && !patch.marker(source))
     ) {

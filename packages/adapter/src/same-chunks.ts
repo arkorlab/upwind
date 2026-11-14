@@ -139,10 +139,13 @@ export async function sameChunks(
     // A proven patch load supplies code without its original map. Compare both its input and
     // output, and keep it apart from ordinary mapped loads. Siblings alone may share this proof:
     // equal relative imports in different directories need not resolve to the same modules.
-    const mapping =
-      patched === undefined
-        ? `mapped\0${maps.carried ? await comparedMap(source, chunk, maps) : ''}`
-        : `rewritten\0${path.dirname(chunk)}\0${chunkCode(patched)}`;
+    let mapping: string;
+    if (patched === undefined) {
+      const originalMap = maps.carried ? await comparedMap(source, chunk, maps) : '';
+      mapping = `mapped\0${originalMap}`;
+    } else {
+      mapping = `rewritten\0${path.dirname(chunk)}\0${chunkCode(patched)}`;
+    }
     const digest = createHash('sha256')
       .update(chunkCode(source))
       .update('\0')

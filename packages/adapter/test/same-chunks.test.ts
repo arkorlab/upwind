@@ -69,6 +69,10 @@ describe('server chunk code and source-map identity', () => {
     return rewrittenChunk(source, file, context());
   }
 
+  function different(source: string, file: string): string {
+    return `${rewritten(source, file)}\n${JSON.stringify(file)}`;
+  }
+
   it('merges package-only twins whose dropped mappings leave different unmapped boundaries', async () => {
     const a = await written('a', PACKAGE_SOURCE, 'AAAA;AACA');
     const b = await written('b', PACKAGE_SOURCE, 'KAAA;;EACA');
@@ -139,9 +143,6 @@ describe('server chunk code and source-map identity', () => {
   it('requires equal rewritten output as well as equal original code', async () => {
     const a = await written('a', PROJECT_SOURCE, 'AAAA', GRAPH);
     const b = await written('b', PROJECT_SOURCE, 'AACA', GRAPH);
-    const different = (source: string, file: string): string | undefined => {
-      return `${rewritten(source, file)}\n${JSON.stringify(file)}`;
-    };
 
     await expect(sameChunks([a, b], { carried: true }, different)).resolves.toStrictEqual(
       new Map(),
@@ -151,9 +152,8 @@ describe('server chunk code and source-map identity', () => {
   it('keeps a proven rewrite apart from an ordinary load of the same code', async () => {
     const a = await written('a', PROJECT_SOURCE, 'AAAA', GRAPH);
     const b = await written('b', PROJECT_SOURCE, 'AAAA', GRAPH);
-    const oneSided = (source: string, file: string): string | undefined => {
-      return file === a ? rewritten(source, file) : undefined;
-    };
+    const oneSided = (source: string, file: string): string | undefined =>
+      file === a ? rewritten(source, file) : undefined;
 
     await expect(sameChunks([a, b], { carried: true }, oneSided)).resolves.toStrictEqual(new Map());
   });
@@ -176,7 +176,9 @@ describe('server chunk code and source-map identity', () => {
   it('runs the actual rewrite guards instead of accepting a marker alone', () => {
     const source = 'const text = `Symbol.for("next.server.manifests")`;';
 
-    expect(() => rewritten(source, path.join(chunks, 'a.js'))).toThrow();
+    expect(() => rewritten(source, path.join(chunks, 'a.js'))).toThrow(
+      'expected the key of the manifests singleton 0 time(s), found 1',
+    );
   });
 
   it('checks later claims against the intermediate source and refuses them before applying', () => {
