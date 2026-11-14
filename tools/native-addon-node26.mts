@@ -14,7 +14,7 @@ function blob(source: Buffer): string {
 }
 
 export async function prepareNode26Addon(directory: string, version: string): Promise<void> {
-  if (version !== '26.13.0') return;
+  if (version !== '26.13.0' && version !== '26.13.1') return;
   const file = path.join(directory, 'native-addon/addon.cc');
   const original = await readFile(file);
   assert.equal(blob(original), ORIGINAL, 'Node 26 compatibility requires the fixed upstream addon');
