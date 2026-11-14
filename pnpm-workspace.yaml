@@ -76,8 +76,7 @@ catalog:
   typescript-eslint: 8.72.2
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
-  # Vitest 5.1 calls AsyncLocalStorage.disable() while resolving mocked imports; Workers
-  # deliberately does not implement it. Keep the last compatible runner for the workerd suites.
+  # Keep the runner used to qualify the workerd suites; runner upgrades need full pool coverage.
   vitest: 5.0.5
   '@vitest/eslint-plugin': 1.6.28
   # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
@@ -89,8 +88,7 @@ catalog:
   hono: 4.13.18
   # Runs `@stayingupwind/cache`'s suites inside workerd, with its own pinned Wrangler and
   # Miniflare, independently of the top-level development runtime.
-  # Keep the established Vitest 5.0.5 pairing while newer Worker-pool lifecycle changes qualify.
-  '@cloudflare/vitest-plugin': 1.5.0
+  '@cloudflare/vitest-plugin': 1.8.1
 
 # Only these dependencies may run install scripts.
 allowBuilds:
