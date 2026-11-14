@@ -285,8 +285,8 @@ catalogs:
       specifier: 4.156.2
       version: 4.156.2
     ws:
-      specifier: 8.22.1
-      version: 8.22.1
+      specifier: 8.23.0
+      version: 8.23.0
     zod:
       specifier: 4.6.7
       version: 4.6.7
@@ -684,7 +684,7 @@ importers:
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
       ws:
         specifier: 'catalog:'
-        version: 8.22.1
+        version: 8.23.0
 
   packages/upwind:
     dependencies:
@@ -705,7 +705,7 @@ importers:
         version: 4.156.2(@cloudflare/workers-types@5.20261103.1)(@types/node@24.19.2)
       ws:
         specifier: 'catalog:'
-        version: 8.22.1
+        version: 8.23.0
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 'catalog:'
@@ -795,7 +795,7 @@ importers:
         version: 5.0.5(@types/node@24.19.2)(vite@8.3.5(@types/node@24.19.2)(esbuild@0.28.2)(jiti@2.7.0)(yaml@2.9.1))
       ws:
         specifier: 'catalog:'
-        version: 8.22.1
+        version: 8.23.0
 
   tools/vocabulary:
     devDependencies:
@@ -3773,8 +3773,8 @@ packages:
       utf-8-validate:
         optional: true
 
-  ws@8.22.1:
-    resolution: {integrity: sha512-oyL6OPYme/CmiFvNuGzeoxCJ4nOrZE2O1FwM9MWM1AsGri6nLXB2pg+lNA8aLeXMSav0J6eIVS1j6vUPzUtK9g==}
+  ws@8.23.0:
+    resolution: {integrity: sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==}
     engines: {node: '>=10.0.0'}
     peerDependencies:
       bufferutil: ^4.0.1
@@ -6303,7 +6303,7 @@ snapshots:
 
   ws@8.21.0: {}
 
-  ws@8.22.1: {}
+  ws@8.23.0: {}
 
   yaml@2.9.1: {}
 

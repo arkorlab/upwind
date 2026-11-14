@@ -30,7 +30,7 @@ catalog:
   '@sentry/core': 11.10.0
   '@types/node': 24.19.2
   '@types/ws': 8.18.2
-  ws: 8.22.1
+  ws: 8.23.0
   socket.io: 4.8.4
   engine.io: 6.6.11
   # What `@stayingupwind/auth` wraps. A peer dependency there, so a project brings its own copy and
