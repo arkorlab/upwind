@@ -2,7 +2,12 @@ import type { ImageRequestParams, ImagesConfig } from '@stayingupwind/core/image
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
 
-import { fetchRemoteSource, sourceResponse } from '../src/image-fallback.ts';
+import {
+  applicationHosts,
+  fetchRemoteSource,
+  imageFallback,
+  sourceResponse,
+} from '../src/image-fallback.ts';
 
 /**
  * What the Worker's own answer for `/_next/image` holds a source to — the fallback for when the
@@ -128,12 +133,36 @@ describe('the Worker’s own answer for an image source', () => {
 
   it.each([
     ['back to this application', 'https://app.example/_next/image?url=%2Fa.png&w=64&q=75'],
+    [
+      'back to this application with a trailing FQDN dot',
+      'https://app.example./_next/image?url=%2Fa.png&w=64&q=75',
+    ],
     ['off the web', 'ftp://cdn.example/a.png'],
     ['to a local address', 'http://169.254.169.254/latest/a.png'],
+    ['to a local address with a trailing FQDN dot', 'http://127.0.0.1./a.png'],
+    ['to localhost with multiple trailing dots', 'http://localhost../a.png'],
   ])('refuses a redirect %s without following it', async (_label, location) => {
     const net = network([['/a.png', () => redirect(location)]]);
 
     const result = await remote(net);
+
+    expect(result.kind).toBe('refused');
+    expect(result.response.status).toBe(HTTP_BAD_REQUEST);
+    expect(net.fetched).toHaveLength(1);
+  });
+
+  it('refuses a redirect back to a bracketed IPv6 x-forwarded-host', async () => {
+    const net = network([['/a.png', () => redirect('http://[::1]:4000/b.png')]]);
+    const request = new Request('https://internal.example/_next/image?url=x&w=64&q=75', {
+      headers: { 'x-forwarded-host': '[::1]:3000' },
+    });
+
+    const result = await fetchRemoteSource({
+      href: 'https://cdn.example/a.png',
+      images: { ...IMAGES, dangerouslyAllowLocalIP: true },
+      ownHosts: applicationHosts(request),
+      fetchImpl: net.fetchImpl,
+    });
 
     expect(result.kind).toBe('refused');
     expect(result.response.status).toBe(HTTP_BAD_REQUEST);
@@ -229,5 +258,53 @@ describe('the Worker’s own answer for an image source', () => {
 
     expect(response.status).toBe(HTTP_BAD_REQUEST);
     await expect(response.text()).resolves.toBe("The requested resource isn't a valid image.");
+  });
+});
+
+describe('applicationHosts and allowed domain normalization', () => {
+  it('parses bracketed IPv6 literals in x-forwarded-host with or without ports', () => {
+    const withPort = new Request('https://internal.example/_next/image', {
+      headers: { 'x-forwarded-host': '[::1]:3000, [2001:0DB8:0:0::1]:8443' },
+    });
+    const withoutPort = new Request('https://internal.example/_next/image', {
+      headers: { 'x-forwarded-host': '[2001:db8::1]' },
+    });
+    const malformed = new Request('https://internal.example/_next/image', {
+      headers: { 'x-forwarded-host': '[unclosed:3000' },
+    });
+
+    expect([...applicationHosts(withPort)]).toStrictEqual([
+      'internal.example',
+      '[::1]',
+      '[2001:db8::1]',
+    ]);
+    expect([...applicationHosts(withoutPort)]).toStrictEqual(['internal.example', '[2001:db8::1]']);
+    expect([...applicationHosts(malformed)]).toStrictEqual(['internal.example']);
+  });
+
+  it('strips trailing FQDN dots on request hosts, forwarded hosts and imageFallback domains', () => {
+    const request = new Request('https://App.Example./_next/image', {
+      headers: { 'x-forwarded-host': 'Edge.Example.COM.:8443' },
+    });
+    const byDomain: ImagesConfig = {
+      ...IMAGES,
+      domains: ['allowed.example.com.'],
+      remotePatterns: [],
+    };
+
+    const allowed = imageFallback(
+      asked('GET'),
+      new URLSearchParams({ url: 'https://allowed.example.com./a.png', w: '64', q: '75' }),
+      byDomain,
+    );
+    const evil = imageFallback(
+      asked('GET'),
+      new URLSearchParams({ url: 'https://evil.com./a.png', w: '64', q: '75' }),
+      byDomain,
+    );
+
+    expect([...applicationHosts(request)]).toStrictEqual(['app.example', 'edge.example.com']);
+    expect(allowed.kind).toBe('remote');
+    expect(evil.kind).toBe('response');
   });
 });

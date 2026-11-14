@@ -1,8 +1,13 @@
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
-import { runnableSourceRegexSchema, unsafeRoutePatternReason } from '../request/pattern-safety.ts';
+import {
+  runnableSourceRegexSchema,
+  unsafeRoutePatternReason,
+  unsafeSourcePatternReason,
+} from '../request/pattern-safety.ts';
 import * as z from '../schema/index.ts';
+import { sourceRegexSchema } from '../util/regex-source.ts';
 import { forEachBlob } from './blob-references.ts';
 import { blobRefSchema } from './blob.ts';
 import {
@@ -28,8 +33,7 @@ import {
   isNodeContainerFunction,
   workerFunctionSchema,
 } from './function-contract.ts';
-import { judgedApart } from './gate-conditions.ts';
-import { gatedEitherWay, isOptimizerPath, rewritesOnto } from './gate-routes.ts';
+import { gateIssues } from './gate-conditions.ts';
 import { workerClassIssues } from './worker-classes.ts';
 
 export { type BlobRef, blobRefSchema } from './blob.ts';
@@ -392,6 +396,16 @@ export const cacheLifeProfileSchema = z.object({
 });
 export type CacheLifeProfile = z.infer<typeof cacheLifeProfileSchema>;
 
+const htmlLimitedBotsSchema = z.union([
+  z.literal(''),
+  sourceRegexSchema.superRefine((pattern, ctx) => {
+    const reason = unsafeSourcePatternReason(pattern, ['i']);
+    if (reason !== undefined) {
+      ctx.addIssue({ code: 'custom', message: `unusable pattern: ${reason}` });
+    }
+  }),
+]);
+
 /** The subset of `next.config` the runtime and the edge need at request time. */
 export const bundleConfigSchema = z.looseObject({
   basePath: z.string(),
@@ -411,7 +425,7 @@ export const bundleConfigSchema = z.looseObject({
    * prerendered page whole for them, as Next.js does; a manifest carries it on for the edge to
    * judge them by (`ProjectManifest.htmlLimitedBots`).
    */
-  htmlLimitedBots: z.string().optional(),
+  htmlLimitedBots: htmlLimitedBotsSchema.optional(),
   poweredByHeader: z.boolean(),
   i18n: i18nSchema.nullable().optional(),
   /** What `/_next/image` enforces; absent when the build left `next/image` unoptimized. */
@@ -638,76 +652,6 @@ function splitIssues(bundle: DeploymentBundle): string[] {
     }
   }
   return issues;
-}
-
-/** Whether the build has a middleware: its matchers, in either place, or a Function of its own. */
-function hasMiddleware(bundle: DeploymentBundle): boolean {
-  return (
-    bundle.middleware !== undefined ||
-    bundle.functions.middleware !== undefined ||
-    bundle.routing.middlewareMatchers.length > 0
-  );
-}
-
-/**
- * What of a bundle's gates no host could ask: a `gates` that declares none; a route the build ships
- * as a file, which is answered from storage before any route is looked for, or the image
- * optimizer's own path, which is answered as the optimizer's before any route is; a route the
- * build does not have, a misspelling among them; any gate of a build with `i18n`, whose dynamic
- * routes the edge leaves to its Function unread, and so could not tell a request of a gated route
- * from another; any gate of a build with a middleware, whose rewrites no build can know, and which
- * runs in the Function for every request the edge hands on rather than serves itself — or whose
- * router reads a data URL as the page it names, which Next.js writes for such a build alone; a
- * route a rewrite of `next.config` may send a request to, or have the image optimizer fetch as its
- * source (`rewritesOnto`), which is served there with no gate asked; a rule a gate is found by that
- * asks for what the deployment's router is not handed as the visitor sent it (`judgedApart`), which
- * the edge would judge otherwise; and a prerendered pathname that may be served as a gated route
- * or as another (`gatedEitherWay`), of which the one gate asked would answer for a route it is not
- * the gate of. Each would be a route served to some visitor with no gate asked, or answered by a
- * gate that is not its own, which declaring a gate says must not happen: the build is refused
- * rather than served so.
- */
-function gateIssues(bundle: DeploymentBundle): string[] {
-  const { gates } = bundle;
-  if (gates === undefined) {
-    return [];
-  }
-  const routes = Object.keys(gates);
-  if (routes.length === 0) {
-    return ['gates declares no gate; a bundle that declares none leaves it out'];
-  }
-  const issues: string[] = [];
-  const { i18n } = bundle.config;
-  if (i18n !== undefined && i18n !== null) {
-    issues.push(
-      'a build with i18n may declare no gate: the edge leaves its dynamic routes to its Function',
-    );
-  }
-  if (hasMiddleware(bundle)) {
-    issues.push(
-      'a build with a middleware may declare no gate: the edge runs the middleware itself only for the requests it serves as documents, and one it hands on runs it in the Function, where a rewrite onto a gated route reaches that route with no gate asked',
-    );
-  }
-  if (bundle.routing.shouldNormalizeNextData) {
-    issues.push(
-      'a build whose router reads a Pages Router data URL as the page it names (shouldNormalizeNextData) may declare no gate: Next.js has it do so only for a build with a middleware',
-    );
-  }
-  const entrypoints = new Set(bundle.entrypoints.map((entry) => entry.pathname));
-  const files = new Set(bundle.staticFiles.map((file) => file.pathname));
-  issues.push(...judgedApart(bundle), ...gatedEitherWay(bundle, gates));
-  for (const route of routes) {
-    if (files.has(route)) {
-      issues.push(`gates names ${route}, which the build ships as a file, served before any gate`);
-    } else if (isOptimizerPath(bundle, route)) {
-      issues.push(
-        `gates names ${route}, the image optimizer's path, answered as the optimizer's before any gate`,
-      );
-    } else if (!entrypoints.has(route)) {
-      issues.push(`gates names ${route}, which is no route of this build`);
-    }
-  }
-  return [...issues, ...rewritesOnto(bundle, routes)];
 }
 
 /**

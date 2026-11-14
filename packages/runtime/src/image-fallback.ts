@@ -7,6 +7,7 @@ import {
   type ImageRequestParams,
   imageResponseHeaders,
   type ImagesConfig,
+  normalizeImageHostname,
   parseImageRequest,
   sourceSizeLimit,
   SVG,
@@ -136,12 +137,54 @@ export function sourceRequest(client: Request, href: string): Request {
   return new Request(new URL(href, client.url).href, { headers });
 }
 
+const PORT_SUFFIX = /^:\d*$/u;
+const INVALID_HOST_CHARACTER = /[\s#%/?@[\\\]^|]/u;
+const NON_ASCII = /\P{ASCII}/u;
+
+function canonicalHostLiteral(authority: string): string | undefined {
+  const probe = `http://${authority}`;
+  return URL.canParse(probe) ? normalizeImageHostname(new URL(probe).hostname) : undefined;
+}
+
+function parseForwardedHostEntry(raw: string): string | undefined {
+  const entry = raw.trim();
+  if (entry === '') {
+    return undefined;
+  }
+  if (entry.startsWith('[')) {
+    const close = entry.indexOf(']');
+    const after = close === -1 ? undefined : entry.slice(close + 1);
+    if (after === undefined || (after !== '' && !PORT_SUFFIX.test(after))) {
+      return undefined;
+    }
+    const bracketed = entry.slice(0, close + 1);
+    return canonicalHostLiteral(bracketed) ?? bracketed.toLowerCase();
+  }
+  const colon = entry.indexOf(':');
+  if (colon !== -1 && entry.includes(':', colon + 1)) {
+    return undefined;
+  }
+  const host = colon === -1 ? entry : entry.slice(0, colon);
+  if (host === '' || INVALID_HOST_CHARACTER.test(host)) {
+    return undefined;
+  }
+  if (NON_ASCII.test(host)) {
+    return canonicalHostLiteral(host) ?? normalizeImageHostname(host);
+  }
+  return normalizeImageHostname(host);
+}
+
 /** The names this application answers at: its own, and the one the edge forwards. */
 export function applicationHosts(request: Request): ReadonlySet<string> {
-  const hosts = new Set([new URL(request.url).hostname]);
+  const hosts = new Set([normalizeImageHostname(new URL(request.url).hostname)]);
   const forwarded = request.headers.get(FORWARDED_HOST_HEADER);
   if (forwarded !== null) {
-    hosts.add(forwarded.split(':', 1)[0] ?? forwarded);
+    for (const part of forwarded.split(',')) {
+      const host = parseForwardedHostEntry(part);
+      if (host !== undefined && host !== '') {
+        hosts.add(host);
+      }
+    }
   }
   return hosts;
 }
@@ -176,7 +219,13 @@ function redirectRefused(
   if (!allowedImageDestination(images, target)) {
     return true;
   }
-  return ownHosts.has(target.hostname);
+  const targetHost = normalizeImageHostname(target.hostname);
+  for (const ownHost of ownHosts) {
+    if (normalizeImageHostname(ownHost) === targetHost) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function fetchHop(

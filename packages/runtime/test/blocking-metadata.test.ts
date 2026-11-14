@@ -42,4 +42,16 @@ describe('a visitor Next.js sends blocking metadata to', () => {
     expect(wantsBlockingMetadata(asked(undefined), '.*')).toBe(false);
     expect(wantsBlockingMetadata(asked('MyBot'), '(')).toBe(false);
   });
+
+  it('caps custom htmlLimitedBots matching to the first 512 characters of user-agent', () => {
+    const within = asked(`${'x'.repeat(500)}MyBot`);
+    const straddling = asked(`${'x'.repeat(510)}MyBot`);
+    const past = asked(`${'x'.repeat(512)}MyBot`);
+    const defaultPast = asked(`${'x'.repeat(600)}Twitterbot/1.0`);
+
+    expect(wantsBlockingMetadata(within, 'MyBot')).toBe(true);
+    expect(wantsBlockingMetadata(straddling, 'MyBot')).toBe(false);
+    expect(wantsBlockingMetadata(past, 'MyBot')).toBe(false);
+    expect(wantsBlockingMetadata(defaultPast, undefined)).toBe(true);
+  });
 });

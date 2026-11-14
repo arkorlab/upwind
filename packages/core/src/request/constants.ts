@@ -111,6 +111,10 @@ export const INTERNAL_REQUEST_HEADERS: readonly string[] = [
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
   NEXT_DATA_HEADER,
+  'x-invocation-id',
+  'x-action-forwarded',
+  'x-matched-path',
+  'x-now-route-matches',
   'x-real-ip',
   'host',
 ];
@@ -132,10 +136,12 @@ export const INTERNAL_REQUEST_HEADER_PREFIXES: readonly string[] = [
   'x-middleware-',
   'x-prerender-',
   NEXTJS_HEADER_PREFIX,
+  'x-next-',
   'x-invoke-',
   CLOUDFLARE_HEADER_PREFIX,
   'x-forwarded-',
   PLATFORM_HEADER_PREFIX,
+  'x-upwind-',
 ];
 
 /** Fixed Next.js build protocol fields; active request controls are checked separately. */
