@@ -243,8 +243,8 @@ catalogs:
       specifier: 17.14.0
       version: 17.14.0
     hono:
-      specifier: 4.13.16
-      version: 4.13.16
+      specifier: 4.13.18
+      version: 4.13.18
     jsonc-parser:
       specifier: 3.3.1
       version: 3.3.1
@@ -461,7 +461,7 @@ importers:
         version: link:../runtime
       hono:
         specifier: 'catalog:'
-        version: 4.13.16
+        version: 4.13.18
       zod:
         specifier: 'catalog:'
         version: 4.6.7
@@ -2936,8 +2936,8 @@ packages:
     resolution: {integrity: sha512-iZyKG96/JwPz1N55vj2Ie2vXbhu440zfUfJvSwEqEbeLluk7NnapfGqa7LH0mOsnDxTF85Mx8/dyR6HfqcbmbQ==}
     engines: {node: '>=20'}
 
-  hono@4.13.16:
-    resolution: {integrity: sha512-AOLOEhvrV+iH92xXCnFr/5+3KjPKcI3xP63XJtX5spAnkznPdHijlIsUTpi7/9EhWqrTCekw5c5zh1K+YsVw7A==}
+  hono@4.13.18:
+    resolution: {integrity: sha512-H9q/E1XizaWstJxUW881dmLxEj+t/TrGGnyxINkm4+sK0qUwsMtFdo2BWI9Vs3cIS19MU6b6iCijoUoEf4f3DA==}
     engines: {node: '>=16.9.0'}
 
   hookified@1.15.1:
@@ -5403,7 +5403,7 @@ snapshots:
     dependencies:
       hookified: 1.15.1
 
-  hono@4.13.16: {}
+  hono@4.13.18: {}
 
   hookified@1.15.1: {}
 
