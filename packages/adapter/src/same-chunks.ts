@@ -121,20 +121,32 @@ function withoutFileComments(source: string): string {
 /**
  * Each chunk of `chunks` whose code another of them has, to that other: the first of the ones that
  * share it, in the order of the paths, so the same build always keeps the same file.
+ *
+ * `rewritten` proves the actual patch loader supplies code without the original map. Only sibling
+ * chunks with equal normalized input and output share that proof; ordinary loads keep their maps.
  */
 export async function sameChunks(
   chunks: readonly string[],
   maps: ChunkMaps,
+  rewritten?: (source: string, file: string) => string | undefined,
 ): Promise<ReadonlyMap<string, string>> {
   const firstByCode = new Map<string, string>();
   const copies = new Map<string, string>();
   const ordered = [...new Set(chunks)].toSorted((a, b) => compareCodeUnits(a, b));
   for (const chunk of ordered) {
     const source = await readFile(chunk, 'utf8');
+    const patched = maps.carried ? rewritten?.(source, chunk) : undefined;
+    // A proven patch load supplies code without its original map. Compare both its input and
+    // output, and keep it apart from ordinary mapped loads. Siblings alone may share this proof:
+    // equal relative imports in different directories need not resolve to the same modules.
+    const mapping =
+      patched === undefined
+        ? `mapped\0${maps.carried ? await comparedMap(source, chunk, maps) : ''}`
+        : `rewritten\0${path.dirname(chunk)}\0${chunkCode(patched)}`;
     const digest = createHash('sha256')
       .update(chunkCode(source))
       .update('\0')
-      .update(maps.carried ? await comparedMap(source, chunk, maps) : '')
+      .update(mapping)
       .digest('hex');
     const first = firstByCode.get(digest);
     if (first === undefined) {
