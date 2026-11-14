@@ -107,7 +107,8 @@ describe('server chunk code and source-map identity', () => {
     const expected = rewritten(source, a);
     const load = patchesPlugin(PATCHES, context()).load;
     assert.ok(load !== undefined && typeof load !== 'function');
-    const loaded = await load.handler.call({} as never, a, { rawId: a, attributes: {} });
+    const id = a.split(path.sep).join('/');
+    const loaded = await load.handler.call({} as never, id, { rawId: id, attributes: {} });
 
     expect(expected).toBeDefined();
     expect(loaded).toStrictEqual({ code: expected, moduleType: 'js' });
