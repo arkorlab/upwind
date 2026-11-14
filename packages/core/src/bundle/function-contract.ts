@@ -52,12 +52,12 @@ function isIsoCalendarDate(value: string): boolean {
 export const workerCompatibilityDateSchema = z
   .string()
   .regex(COMPATIBILITY_DATE_PATTERN)
-  .refine(
-    (value) =>
+  .refine((value) => {
+    return (
       !COMPATIBILITY_DATE_PATTERN.test(value) ||
-      (isIsoCalendarDate(value) && value >= MIN_WORKER_COMPATIBILITY_DATE),
-    `expected a valid YYYY-MM-DD compatibility date on or after ${MIN_WORKER_COMPATIBILITY_DATE}`,
-  );
+      (isIsoCalendarDate(value) && value >= MIN_WORKER_COMPATIBILITY_DATE)
+    );
+  }, `expected a valid YYYY-MM-DD compatibility date on or after ${MIN_WORKER_COMPATIBILITY_DATE}`);
 
 export const functionModuleTypeSchema = z.enum(['esm', 'commonjs', 'text', 'json', 'wasm', 'data']);
 export type FunctionModuleType = z.infer<typeof functionModuleTypeSchema>;
