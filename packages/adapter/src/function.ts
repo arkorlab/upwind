@@ -4,10 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 import {
   type FunctionModule,
-  type WorkerFunctionSpec,
   type ManifestHead,
   manifestHead,
   type SourceMapRef,
+  type WorkerCompatibilityFlag,
+  type WorkerFunctionSpec,
 } from '@stayingupwind/core/bundle';
 import { type OutputChunk, type Plugin, rolldown } from 'rolldown';
 
@@ -74,7 +75,7 @@ export const FUNCTION_COMPATIBILITY_DATE = '2026-09-15';
  * front door, through whatever Workers and security the zone has, and none goes to its origin. It is
  * given to every Function the adapter builds, the middleware's as well as the application's.
  */
-export const FUNCTION_COMPATIBILITY_FLAGS: readonly string[] = [
+export const FUNCTION_COMPATIBILITY_FLAGS: readonly WorkerCompatibilityFlag[] = [
   'nodejs_compat',
   'global_fetch_strictly_public',
 ];

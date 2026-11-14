@@ -117,13 +117,13 @@ export const FIXTURE_COVERAGE = {
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-large-prerender-bodies': {
-    proofVersion: '16.4.2',
+    proofVersion: '16.4.5',
     adapterFile: ADAPTER_FILE,
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },
   'next-twoslash': {
-    proofVersion: '16.4.2',
+    proofVersion: '16.4.5',
     expected: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
     chunks: [TURBOPACK_RUNTIME, TURBOPACK_ROOT],
   },

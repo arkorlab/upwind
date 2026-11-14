@@ -269,14 +269,11 @@ jobs:
       # branch was green there, but "was green" is not "is green on this tree", and a release is the
       # one place worth paying for the difference.
       #
-      # `pnpm audit` is CI's one job that is not here, and the exception is the point rather than an
-      # omission. It judges the registry's advisory feed at the moment it is asked, not the tree — it
-      # is the only answer in CI that changes while the tree does not — so as a release gate it can
-      # stop a release over something that is not in the release, including an advisory against a
-      # linter, and with nothing to do but wait on somebody else's fix. A release that has to go out
-      # is often a release that has to go out *now*. What travels to a reader is the production
-      # closure, which this release attaches as an SBOM for exactly this kind of question, and
-      # `main` is audited on every pull request that reaches it.
+      # `pnpm audit` runs at `--audit-level=high` here rather than CI's `--audit-level low`: high and
+      # critical advisories stop a release outright, while low and moderate advisories against build
+      # tooling are enforced on `main` without blocking an urgent release over a linter advisory. What
+      # travels to a reader is the production closure, which this release attaches as an SBOM.
+      - run: pnpm audit --audit-level=high
       #
       # `build` first, and this is not a tidying: `@stayingupwind/sdk` and `@stayingupwind/auth` are
       # read through the `dist` they are built into, which no checkout contains, and `auth` imports
