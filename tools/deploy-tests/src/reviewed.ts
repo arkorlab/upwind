@@ -551,6 +551,12 @@ const AT_16_4_4: readonly Group[] = AT_16_4_3.filter(({ record }) => record !== 
  */
 const AT_16_4_5: readonly Group[] = [...AT_16_4_4, ...IMAGE_CDN_16_4_5];
 
+/**
+ * The readings of 16.4.5, read again at 16.4.6 (`REVIEWED.md`): 16.4.6 changes none of their suites.
+ * It changes only the compression, create-next-app and Tailwind suites, which no reading records.
+ */
+const AT_16_4_6: readonly Group[] = AT_16_4_5;
+
 export const REVIEWED: readonly ReviewedCase[] = [
   ...entriesOf(
     { version: '16.4.3', commit: '29bbeab09981148ade186e8599ecdede15abc281' },
@@ -563,5 +569,9 @@ export const REVIEWED: readonly ReviewedCase[] = [
   ...entriesOf(
     { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' },
     AT_16_4_5,
+  ),
+  ...entriesOf(
+    { version: '16.4.6', commit: '54b876b6b161b0ecda19562eb264bec637e60d6d' },
+    AT_16_4_6,
   ),
 ];

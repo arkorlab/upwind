@@ -66,7 +66,7 @@ on:
           - cloudflare
           - node
       nextjsRef:
-        description: "Next.js release tag to test against (`v16.4.5`, `v16.5.0-canary.39`) — inside the adapter's supported range"
+        description: "Next.js release tag to test against (`v16.4.6`, `v16.5.0-canary.46`) — inside the adapter's supported range"
         default: 'v16.4.5'
         type: string
       tests:

@@ -15,11 +15,11 @@ import {
 } from '../src/node-next-release.ts';
 
 const require = createRequire(import.meta.url);
-/** Each supported release, installed: 16.4.3 and 16.4.4 under their aliases, 16.4.5 as the catalog's. */
+/** Each supported release, installed under its alias. */
 const INSTALLED = [
   { version: '16.4.3', root: path.dirname(require.resolve('next-16-4-3/package.json')) },
   { version: '16.4.4', root: path.dirname(require.resolve('next-16-4-4/package.json')) },
-  { version: '16.4.5', root: path.dirname(require.resolve('next/package.json')) },
+  { version: '16.4.5', root: path.dirname(require.resolve('next-16-4-5/package.json')) },
 ] as const;
 /** Reviewed sources the two releases publish with the same bytes. */
 const SHARED = [

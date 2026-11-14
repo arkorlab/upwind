@@ -16,7 +16,7 @@ const AGE_EXCEPTIONS = [
   'turbo',
 ];
 
-// Next.js 16.4.3's test-install security profile, unchanged in 16.4.4 and 16.4.5. Its five
+// Next.js 16.4.3's test-install security profile, unchanged through 16.4.6. Its five
 // version-qualified exceptions cannot be represented by npm's name-only matcher; omitting them makes
 // the npm install more restrictive.
 const UPSTREAM_EXCEPTIONS = [

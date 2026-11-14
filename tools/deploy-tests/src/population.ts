@@ -105,7 +105,8 @@ export interface Supplement {
  * The release every copy below is held to: the supported one (`NIGHTLY_NEXTJS_REF`). The copied
  * cases are as they were at 16.4.4, but for what 16.4.5 adds: avif-svg-signature-confusion, a suite of
  * its own, and cases beside those copied in app-root-params-getters and
- * partial-fallback-shell-upgrade.
+ * partial-fallback-shell-upgrade. 16.4.6 leaves every copied suite's directory as 16.4.5 has it: each
+ * `tree` below is the same at both, so the copies can move with the supported release when it does.
  */
 const NEXT_16_4_5 = { version: '16.4.5', commit: '4e5335a00314be7fbb2aace5e9be56a88e64e5a8' };
 
