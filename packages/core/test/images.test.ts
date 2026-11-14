@@ -328,20 +328,35 @@ describe('parseImageRequest', () => {
     expect(result.kind === 'ok' && result.params.quality).toBe(33);
   });
 
-  it('normalizes trailing FQDN dots on configured domains and remote hostnames', () => {
+  it('matches normalized and stored trailing-dot remotePatterns while blocking trailing-dot local hosts', () => {
     const byDomain: ImagesConfig = { ...CONFIG, domains: ['allowed.example.com.'] };
-    const negated: ImagesConfig = {
+    const withoutDot: ImagesConfig = {
       ...CONFIG,
       remotePatterns: [
-        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: '^.*$' },
+        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: '^.*$' },
       ],
     };
-    const evilQuery = remote('https://evil.com./a.png');
+    const withDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^cdn\.example\.$`, pathname: '^.*$' },
+      ],
+    };
+    const anyHttp: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [{ protocol: 'http', hostname: '^.*$', pathname: '^.*$' }],
+    };
+    const evilDot = remote('https://evil.example./a.png');
+    const loopbackDot = remote('http://127.0.0.1./a.png');
+    const localhostDot = remote('http://localhost./a.png');
 
     expect(parse(remote('https://allowed.example.com/a.png'), null, byDomain).kind).toBe('ok');
     expect(parse(remote('https://allowed.example.com./a.png'), null, byDomain).kind).toBe('ok');
-    expect(parse(remote('https://avatars.githubusercontent.com./u/1')).kind).toBe('ok');
-    expect(errorOf(parse(evilQuery, null, negated))).toBe('"url" parameter is not allowed');
+    expect(parse(remote('https://cdn.example./a.png'), null, withoutDot).kind).toBe('ok');
+    expect(parse(remote('https://cdn.example./a.png'), null, withDot).kind).toBe('ok');
+    expect(errorOf(parse(evilDot, null, withoutDot))).toBe('"url" parameter is not allowed');
+    expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe('"url" parameter is not allowed');
+    expect(errorOf(parse(localhostDot, null, anyHttp))).toBe('"url" parameter is not allowed');
   });
 
   it('keeps the source format for a client that names none offered', () => {

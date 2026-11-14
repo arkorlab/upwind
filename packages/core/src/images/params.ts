@@ -82,7 +82,12 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
     return false;
   }
   const regexps = remoteRegExpsOf(pattern);
-  if (!testWithin(regexps.hostname, normalizeImageHostname(url.hostname))) {
+  const normalizedHostname = normalizeImageHostname(url.hostname);
+  const rawHostname = url.hostname.toLowerCase();
+  if (
+    !testWithin(regexps.hostname, normalizedHostname) &&
+    (rawHostname === normalizedHostname || !testWithin(regexps.hostname, rawHostname))
+  ) {
     return false;
   }
   if (pattern.search !== undefined && pattern.search !== url.search) {

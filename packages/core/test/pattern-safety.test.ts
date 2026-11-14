@@ -2,6 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import { bundleConfigSchema } from '../src/bundle/schema.ts';
 import {
+  NEXT_HTML_LIMITED_BOTS,
+  runsBoundedHtmlLimitedBots,
+} from '../src/request/blocking-metadata.ts';
+import {
   unsafeRoutePatternReason,
   unsafeSourcePatternReason,
 } from '../src/request/pattern-safety.ts';
@@ -281,24 +285,47 @@ describe('bundleConfigSchema htmlLimitedBots', () => {
     poweredByHeader: false,
   };
 
-  it.each(['MyBot|Discordbot', '.*', '', undefined])(
-    'admits safe or unset htmlLimitedBots value %s',
-    (htmlLimitedBots) => {
-      const result = bundleConfigSchema.safeParse({
-        ...baseConfig,
-        ...(htmlLimitedBots !== undefined && { htmlLimitedBots }),
-      });
+  it.each([
+    NEXT_HTML_LIMITED_BOTS,
+    'MyBot|Discordbot',
+    '.*',
+    '(?:MyBot|OtherBot)',
+    String.raw`[\w-]+-Google|Mozilla.*|MyBot`,
+    '',
+    undefined,
+  ])('admits bounded or unset htmlLimitedBots value %s', (htmlLimitedBots) => {
+    const result = bundleConfigSchema.safeParse({
+      ...baseConfig,
+      ...(htmlLimitedBots !== undefined && { htmlLimitedBots }),
+    });
 
-      expect(result.success).toBe(true);
-    },
-  );
+    expect(result.success).toBe(true);
+  });
 
-  it.each(['(a+)+', '(a|aa)+', '(?:MyBot|Crawler+)+', String.raw`^\/(?:aA+)+$`, '(unclosed'])(
-    'rejects unsafe or invalid htmlLimitedBots pattern %s',
-    (htmlLimitedBots) => {
-      const result = bundleConfigSchema.safeParse({ ...baseConfig, htmlLimitedBots });
+  it.each([
+    '^a+a+a+a+a+b$',
+    String.raw`\w+\w+!`,
+    '(a+)+',
+    '(a|aa)+',
+    '(?:MyBot|Crawler+)+',
+    String.raw`^\/(?:aA+)+$`,
+    '(unclosed',
+  ])('rejects unbounded, unsafe or invalid htmlLimitedBots pattern %s', (htmlLimitedBots) => {
+    const result = bundleConfigSchema.safeParse({ ...baseConfig, htmlLimitedBots });
 
-      expect(result.success).toBe(false);
-    },
-  );
+    expect(result.success).toBe(false);
+  });
+
+  it('reports when a polynomial htmlLimitedBots pattern exceeds bounded User-Agent cost', () => {
+    const result = bundleConfigSchema.safeParse({
+      ...baseConfig,
+      htmlLimitedBots: '^a+a+a+a+a+b$',
+    });
+
+    expect(runsBoundedHtmlLimitedBots('^a+a+a+a+a+b$')).toBe(false);
+    expect(result.success).toBe(false);
+    expect(result.success ? '' : JSON.stringify(result.error.issues)).toContain(
+      'htmlLimitedBots pattern exceeds bounded User-Agent evaluation cost',
+    );
+  });
 });

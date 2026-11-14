@@ -1,6 +1,7 @@
 import { STATIC_PAGES_FALLBACK_PRIVACY } from '../cache/static-page-version.ts';
 import { cronsSchema } from '../cron/schema.ts';
 import { checkedImagesConfigSchema } from '../images/build.ts';
+import { runsBoundedHtmlLimitedBots } from '../request/blocking-metadata.ts';
 import {
   runnableSourceRegexSchema,
   unsafeRoutePatternReason,
@@ -402,6 +403,13 @@ const htmlLimitedBotsSchema = z.union([
     const reason = unsafeSourcePatternReason(pattern, ['i']);
     if (reason !== undefined) {
       ctx.addIssue({ code: 'custom', message: `unusable pattern: ${reason}` });
+      return;
+    }
+    if (!runsBoundedHtmlLimitedBots(pattern)) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'htmlLimitedBots pattern exceeds bounded User-Agent evaluation cost',
+      });
     }
   }),
 ]);
