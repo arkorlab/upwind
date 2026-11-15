@@ -516,7 +516,7 @@ jobs:
       # there are two checkouts here and no manifest above them, and they do not agree on a version.
       # This way each directory's own `packageManager` is honoured — Next.js's inside `nextjs`, this
       # repository's inside `adapter`.
-      - run: npm install --global corepack@latest && corepack enable
+      - run: npm install --global corepack@0.36.0 && corepack enable
 
       # This repository first, so that the next step can ask the API a question before anything long
       # happens: the adapter's own install is a minute, and building Next.js from source is twenty.

@@ -328,7 +328,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @stayingupwind/adapter build
       - name: Compiled Twoslash route and emitted Function
-        run: pnpm check:matrix --fixture next-twoslash --versions 16.4.2
+        run: pnpm check:matrix --fixture next-twoslash --versions 16.4.5
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
@@ -373,7 +373,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @stayingupwind/adapter build
       - name: Large completed pages and emitted Function
-        run: pnpm check:matrix --fixture next-large-prerender-bodies --versions 16.4.2
+        run: pnpm check:matrix --fixture next-large-prerender-bodies --versions 16.4.5
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
