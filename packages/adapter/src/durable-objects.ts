@@ -33,6 +33,7 @@ import { FUNCTION_COMPATIBILITY_DATE, FUNCTION_COMPATIBILITY_FLAGS } from './fun
 import { nodeBuiltinRequires } from './node-requires.ts';
 import { objectWasm } from './object-wasm.ts';
 import { projectOnly } from './project-maps.ts';
+import { serverOnlyPlugin } from './server-only.ts';
 import {
   carriesMaps,
   type SourceMapsOption,
@@ -196,6 +197,7 @@ export async function bundleWorkerClass(
       // module, the entry — is never watched as a file of the project's.
       ...(beforeRead === undefined ? [] : [watchBuildSources(beforeRead)]),
       nodeBuiltinRequires(),
+      serverOnlyPlugin(),
       wasm.plugin,
     ],
     transform: {
