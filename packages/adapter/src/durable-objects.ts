@@ -193,11 +193,11 @@ export async function bundleWorkerClass(
         `export { ${declaration.className} as ${kind.exportName} } from ${jsLiteral(module)};\nexport default {};`,
         read,
       ),
-      // After the two above, so that what they answer for — the global object injected into every
-      // module, the entry — is never watched as a file of the project's.
+      serverOnlyPlugin(),
+      // After the three above, so that what they answer for — the global object injected into
+      // every module, the entry, `server-only` — is never watched as a file of the project's.
       ...(beforeRead === undefined ? [] : [watchBuildSources(beforeRead)]),
       nodeBuiltinRequires(),
-      serverOnlyPlugin(),
       wasm.plugin,
     ],
     transform: {

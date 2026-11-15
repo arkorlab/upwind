@@ -68,7 +68,10 @@ describe('server-only in a class module’s bundle', () => {
     });
 
     expect(bundled?.source).not.toContain(THROW_MARKER);
-    expect(watched.every((file) => path.isAbsolute(file))).toBe(true);
+    // The package's files cannot change the bundle, so the restart watch is told of none of them.
+    expect(watched).not.toContainEqual(
+      expect.stringContaining(path.join('node_modules', 'server-only')),
+    );
     expect(bundled?.inputs).not.toContain(
       path.join(directory, 'node_modules/server-only/index.js'),
     );
