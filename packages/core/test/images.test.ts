@@ -328,43 +328,97 @@ describe('parseImageRequest', () => {
     expect(result.kind === 'ok' && result.params.quality).toBe(33);
   });
 
-  it('matches normalized and stored trailing-dot remotePatterns while preserving exclusions and local blocks', () => {
+  it('matches normalized and explicit trailing-dot remotePatterns across compound forms', () => {
+    const anyPathname = '^.*$';
     const byDomain: ImagesConfig = { ...CONFIG, domains: ['allowed.example.com.'] };
     const withoutDot: ImagesConfig = {
       ...CONFIG,
       remotePatterns: [
-        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: '^.*$' },
+        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: anyPathname },
       ],
     };
     const withDot: ImagesConfig = {
       ...CONFIG,
       remotePatterns: [
-        { protocol: 'https', hostname: String.raw`^(?:^(?:cdn\.example\.)$)$`, pathname: '^.*$' },
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:^(?:cdn\.example\.)$)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const alternationWithDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:cdn\.example\.|other\.example)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const charClassWithDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:cdn\.example[.]|other\.example)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const cdnDot = remote('https://cdn.example./a.png');
+
+    expect(parse(remote('https://allowed.example.com/a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(remote('https://allowed.example.com./a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(cdnDot, null, withoutDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, withDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, alternationWithDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, charClassWithDot).kind).toBe('ok');
+  });
+
+  it('preserves negative-lookahead exclusions and local-address blocks on trailing-dot hosts', () => {
+    const anyPathname = '^.*$';
+    const notAllowed = '"url" parameter is not allowed';
+    const withoutDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: anyPathname },
       ],
     };
     const negated: ImagesConfig = {
       ...CONFIG,
       remotePatterns: [
-        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: '^.*$' },
+        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: anyPathname },
+      ],
+    };
+    const negatedMixed: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?!evil\.com$)(?:cdn\.example\.|[a-z.]+)$`,
+          pathname: anyPathname,
+        },
       ],
     };
     const anyHttp: ImagesConfig = {
       ...CONFIG,
-      remotePatterns: [{ protocol: 'http', hostname: '^.*$', pathname: '^.*$' }],
+      remotePatterns: [{ protocol: 'http', hostname: anyPathname, pathname: anyPathname }],
     };
+
+    const cdnDot = remote('https://cdn.example./a.png');
     const evilDot = remote('https://evil.example./a.png');
     const excludedDot = remote('https://evil.com./a.png');
     const loopbackDot = remote('http://127.0.0.1./a.png');
     const localhostDot = remote('http://localhost./a.png');
 
-    expect(parse(remote('https://allowed.example.com/a.png'), null, byDomain).kind).toBe('ok');
-    expect(parse(remote('https://allowed.example.com./a.png'), null, byDomain).kind).toBe('ok');
-    expect(parse(remote('https://cdn.example./a.png'), null, withoutDot).kind).toBe('ok');
-    expect(parse(remote('https://cdn.example./a.png'), null, withDot).kind).toBe('ok');
-    expect(errorOf(parse(evilDot, null, withoutDot))).toBe('"url" parameter is not allowed');
-    expect(errorOf(parse(excludedDot, null, negated))).toBe('"url" parameter is not allowed');
-    expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe('"url" parameter is not allowed');
-    expect(errorOf(parse(localhostDot, null, anyHttp))).toBe('"url" parameter is not allowed');
+    expect(parse(cdnDot, null, negatedMixed).kind).toBe('ok');
+    expect(errorOf(parse(evilDot, null, withoutDot))).toBe(notAllowed);
+    expect(errorOf(parse(excludedDot, null, negated))).toBe(notAllowed);
+    expect(errorOf(parse(excludedDot, null, negatedMixed))).toBe(notAllowed);
+    expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe(notAllowed);
+    expect(errorOf(parse(localhostDot, null, anyHttp))).toBe(notAllowed);
   });
 
   it('keeps the source format for a client that names none offered', () => {

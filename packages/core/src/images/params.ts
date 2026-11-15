@@ -2,6 +2,7 @@ import { testWithin } from '../request/pattern-budget.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
 import { isLocalAddress, normalizeImageHostname } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';
+import { withoutTrailingDotSource } from './trailing-dot-pattern.ts';
 
 /**
  * `/_next/image?url=…&w=…&q=…`, checked the way Next.js's own optimizer checks it
@@ -47,7 +48,13 @@ function invalid(errorMessage: string): Invalid {
  * object, on the first image request rather than when the manifest is parsed, so a manifest with
  * images costs a document request nothing.
  */
-const remoteRegExps = new WeakMap<ImageRemotePattern, { hostname: RegExp; pathname: RegExp }>();
+interface CompiledRemotePattern {
+  readonly hostname: RegExp;
+  readonly pathname: RegExp;
+  withoutTrailingDot?: RegExp | false;
+}
+
+const remoteRegExps = new WeakMap<ImageRemotePattern, CompiledRemotePattern>();
 const localRegExps = new WeakMap<ImageLocalPattern, RegExp>();
 
 function compile(source: string): RegExp {
@@ -56,13 +63,32 @@ function compile(source: string): RegExp {
   return new RegExp(source);
 }
 
-function remoteRegExpsOf(pattern: ImageRemotePattern): { hostname: RegExp; pathname: RegExp } {
+function remoteRegExpsOf(pattern: ImageRemotePattern): CompiledRemotePattern {
   let regexps = remoteRegExps.get(pattern);
   if (regexps === undefined) {
     regexps = { hostname: compile(pattern.hostname), pathname: compile(pattern.pathname) };
     remoteRegExps.set(pattern, regexps);
   }
   return regexps;
+}
+
+function trailingDotRegExpOf(
+  regexps: CompiledRemotePattern,
+  pattern: ImageRemotePattern,
+): RegExp | false {
+  if (regexps.withoutTrailingDot === undefined) {
+    const rewritten = withoutTrailingDotSource(pattern.hostname);
+    if (rewritten === undefined) {
+      regexps.withoutTrailingDot = false;
+    } else {
+      try {
+        regexps.withoutTrailingDot = compile(rewritten);
+      } catch {
+        regexps.withoutTrailingDot = false;
+      }
+    }
+  }
+  return regexps.withoutTrailingDot;
 }
 
 function localRegExpOf(pattern: ImageLocalPattern): RegExp {
@@ -74,19 +100,21 @@ function localRegExpOf(pattern: ImageLocalPattern): RegExp {
   return regexp;
 }
 
-function spellsTrailingDot(source: string): boolean {
-  let index = source.length - 1;
-  while (index >= 0 && (source[index] === ')' || source[index] === '$')) {
-    index -= 1;
-  }
-  if (index < 1 || source[index] !== '.') {
+function matchesTrailingDotHostname(
+  regexps: CompiledRemotePattern,
+  pattern: ImageRemotePattern,
+  url: URL,
+  normalizedHostname: string,
+): boolean {
+  if (normalizedHostname === '' || !url.hostname.endsWith('.')) {
     return false;
   }
-  let slashes = 0;
-  for (let cursor = index - 1; cursor >= 0 && source[cursor] === '\\'; cursor -= 1) {
-    slashes += 1;
-  }
-  return slashes % 2 === 1;
+  const withoutTrailingDot = trailingDotRegExpOf(regexps, pattern);
+  return (
+    withoutTrailingDot !== false &&
+    testWithin(regexps.hostname, `${normalizedHostname}.`) &&
+    testWithin(withoutTrailingDot, normalizedHostname)
+  );
 }
 
 function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
@@ -100,12 +128,7 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
   const normalizedHostname = normalizeImageHostname(url.hostname);
   if (
     !testWithin(regexps.hostname, normalizedHostname) &&
-    !(
-      normalizedHostname !== '' &&
-      url.hostname.endsWith('.') &&
-      spellsTrailingDot(pattern.hostname) &&
-      testWithin(regexps.hostname, `${normalizedHostname}.`)
-    )
+    !matchesTrailingDotHostname(regexps, pattern, url, normalizedHostname)
   ) {
     return false;
   }
