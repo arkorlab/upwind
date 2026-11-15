@@ -1,12 +1,21 @@
 // eslint-disable-next-line no-restricted-imports, import-x/no-nodejs-modules -- the Workers compatibility module creates and reads the gate's saved encoded fixture bytes.
-import { brotliCompressSync, brotliDecompressSync, deflateSync, gzipSync } from 'node:zlib';
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  deflateSync,
+  gzipSync,
+} from 'node:zlib';
 
+import { EDGE_DEBUG_HEADER } from '@stayingupwind/core/request';
+import { MAX_GATE_SHELL_BYTES } from '@stayingupwind/host/bindings';
 import type { EdgePointer } from '@stayingupwind/host/delivery';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { EdgeGates } from '../src/edge-host.ts';
+import { GATE_TIMEOUT_MS } from '../src/handlers/gate.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -145,18 +154,47 @@ function policyNonce(response: Response, header = CSP): string | undefined {
 }
 
 /** One-byte input fragments exercise decoder state without waiting for the complete response. */
-function fragments(bytes: Uint8Array, size: number): ReadableStream<Uint8Array> {
+function fragments(
+  bytes: Uint8Array,
+  size: number,
+  strategy?: QueuingStrategy<Uint8Array>,
+): ReadableStream<Uint8Array> {
   let at = 0;
-  return new ReadableStream({
-    pull(controller) {
-      if (at === bytes.byteLength) {
-        controller.close();
-        return;
-      }
-      controller.enqueue(bytes.slice(at, at + size));
-      at = Math.min(at + size, bytes.byteLength);
+  return new ReadableStream(
+    {
+      pull(controller) {
+        if (at === bytes.byteLength) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(bytes.slice(at, at + size));
+        at = Math.min(at + size, bytes.byteLength);
+      },
     },
-  });
+    strategy,
+  );
+}
+
+async function readWithDownstreamPause(response: Response, pauseMs: number): Promise<string> {
+  if (response.body === null) throw new Error('expected response body');
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  const first = await reader.read();
+  if (first.done) throw new Error('expected initial response chunk before pause');
+  if (first.value instanceof Uint8Array) {
+    parts.push(decoder.decode(first.value, { stream: true }));
+  }
+  await vi.advanceTimersByTimeAsync(pauseMs);
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    if (next.value instanceof Uint8Array) {
+      parts.push(decoder.decode(next.value, { stream: true }));
+    }
+  }
+  parts.push(decoder.decode());
+  return parts.join('');
 }
 
 function answer(body: BodyInit | null, encoding: string, type = 'text/html'): Response {
@@ -178,14 +216,18 @@ const CASES = [
   { id: 'br/1', codings: ['br'], copies: 1 },
   { id: 'br/64', codings: ['br'], copies: LARGE_COPIES },
   { id: 'deflate/64', codings: ['deflate'], copies: LARGE_COPIES },
-  { id: 'gzip then br', codings: ['gzip', 'br'], copies: LARGE_COPIES },
-  { id: 'br then gzip', codings: ['br', 'gzip'], copies: LARGE_COPIES },
-  { id: 'two br layers', codings: ['br', 'br'], copies: LARGE_COPIES },
+  { id: 'gzip then identity', codings: ['gzip', 'identity'], copies: LARGE_COPIES },
+  { id: 'identity then br', codings: ['identity', 'br'], copies: LARGE_COPIES },
   { id: 'fragmented br', codings: ['br'], copies: LARGE_COPIES, piece: 1 },
   { id: 'fragmented gzip', codings: ['gzip'], copies: LARGE_COPIES, piece: 1 },
 ] as const;
 
 describe('encoded terminal gate HTML nonce', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
   it.each(CASES)('stamps the policy nonce on $id', async (example) => {
     const saved = savedDocument(example.copies);
     const bytes = encoded(saved, example.codings);
@@ -266,8 +308,8 @@ describe('encoded terminal gate HTML nonce', () => {
     expect(response.headers.get('cache-control')).toBe('private, no-store');
   });
 
-  it.each(['zstd', 'gzip, unknown', 'gzip,'])(
-    'refuses unsupported coding %s without falling through or retaining its body',
+  it.each(['zstd', 'gzip, unknown', 'gzip,', 'gzip, gzip', 'gzip, br', 'br, gzip', 'br, br'])(
+    'refuses unsupported or multi-layer coding %s without falling through or retaining its body',
     async (coding) => {
       let sent = false;
       let cancelled = false;
@@ -286,11 +328,251 @@ describe('encoded terminal gate HTML nonce', () => {
       const { response } = await routed('GET', answer(body, coding), { cspNonce: true });
 
       expect(response.status).toBe(UNAVAILABLE_STATUS);
+      expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
       expect(response.headers.has('content-encoding')).toBe(false);
       expect(response.headers.has(CSP)).toBe(false);
       expect(cancelled).toBe(true);
     },
   );
+
+  it.each(['gzip', 'br'] as const)(
+    'aborts an oversized streamed %s document mid-stream within MAX_GATE_SHELL_BYTES',
+    async (coding) => {
+      const uncompressed = new Uint8Array(MAX_GATE_SHELL_BYTES * 2);
+      let state = 17;
+      for (let index = 0; index < uncompressed.byteLength; index += 1) {
+        state = (state * 131 + 17) % 65_521;
+        uncompressed[index] = 65 + (state % 26);
+      }
+      const oversized = Uint8Array.from(
+        coding === 'br'
+          ? brotliCompressSync(uncompressed, {
+              params: { [constants.BROTLI_PARAM_QUALITY]: 1 },
+            })
+          : gzipSync(uncompressed),
+      );
+      let at = 0;
+      let cancelled = false;
+      const chunkSize = 256;
+      const body = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            if (at >= oversized.byteLength) {
+              controller.close();
+              return;
+            }
+            controller.enqueue(oversized.subarray(at, at + chunkSize));
+            at = Math.min(at + chunkSize, oversized.byteLength);
+          },
+          cancel() {
+            cancelled = true;
+          },
+        },
+        { highWaterMark: 0 },
+      );
+
+      await expect(routed('GET', answer(body, coding), { cspNonce: true })).rejects.toThrow(
+        /exceeded/u,
+      );
+      expect(cancelled).toBe(true);
+      expect(at).toBeLessThan(oversized.byteLength);
+    },
+  );
+
+  it('refuses a high-ratio single-slice br decompression bomb before headers leave', async () => {
+    const bomb = Uint8Array.from(
+      brotliCompressSync(new Uint8Array(MAX_GATE_SHELL_BYTES * 2).fill(0x41)),
+    );
+    let cancelled = false;
+    let sent = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          if (sent) {
+            controller.close();
+            return;
+          }
+          sent = true;
+          controller.enqueue(bomb);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const { response } = await routed('GET', answer(body, 'br'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+  });
+
+  it('streams the first decoded chunk before the remainder of a gated HTML response arrives', async () => {
+    const headBytes = gzipSync(
+      new TextEncoder().encode(`<html><head><script nonce="${KEPT_NONCE}">1</script></head><body>`),
+    );
+    const { promise: releaseTail, resolve: sendTail } = Promise.withResolvers<undefined>();
+    let phase = 0;
+    const body = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (phase === 0) {
+          phase = 1;
+          controller.enqueue(Uint8Array.from(headBytes));
+          return;
+        }
+        await releaseTail;
+        controller.close();
+      },
+    });
+    const { pointer } = await seedSite({
+      document: pprDocument(),
+      pathname: POST,
+      dynamicRoutes: [{ sourceRegex: POST_PATTERN, route: POST, gated: POST }],
+      gates: { [POST]: GATE },
+      gatedPathnames: { [POST]: POST },
+    });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request: navigation('/posts/abc'),
+      url: new URL('https://site.example/posts/abc'),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) }),
+      host: {
+        ...standaloneHost(env),
+        gates: { answer: () => Promise.resolve(answer(body, 'gzip')) },
+      },
+      pointer: { ...pointer, cspNonce: true },
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+
+    expect(response.status).toBe(200);
+    expect(phase).toBe(1);
+
+    sendTail(undefined);
+    const text = await response.text();
+    await waitOnExecutionContext(ctx);
+    const nonce = policyNonce(response);
+
+    expect(nonce).toBeDefined();
+    expect(text).toContain(`nonce="${nonce ?? ''}"`);
+  });
+
+  it('does not charge downstream client pauses between pulls against GATE_TIMEOUT_MS', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+    const fullCompressed = encoded(savedDocument(32), ['gzip']);
+    const body = fragments(fullCompressed, 128, { highWaterMark: 0 });
+    const { pointer } = await seedSite({
+      document: pprDocument(),
+      pathname: POST,
+      dynamicRoutes: [{ sourceRegex: POST_PATTERN, route: POST, gated: POST }],
+      gates: { [POST]: GATE },
+      gatedPathnames: { [POST]: POST },
+    });
+    const ctx = createExecutionContext();
+    const response = await serveFromPointer({
+      request: navigation('/posts/abc'),
+      url: new URL('https://site.example/posts/abc'),
+      env,
+      ctx,
+      runtime: standaloneRuntime(env, { memory: createEdgeMemory(() => Date.now()) }),
+      host: {
+        ...standaloneHost(env),
+        gates: { answer: () => Promise.resolve(answer(body, 'gzip')) },
+      },
+      pointer: { ...pointer, cspNonce: true },
+      pointerMs: 0,
+      privateDelivery: false,
+      cspReportingPath: undefined,
+    });
+
+    expect(response.status).toBe(200);
+
+    const text = await readWithDownstreamPause(response, GATE_TIMEOUT_MS * 2);
+    await waitOnExecutionContext(ctx);
+    const nonce = policyNonce(response);
+
+    expect(nonce).toBeDefined();
+    expect(text).toContain(`nonce="${nonce ?? ''}"`);
+    expect(text).not.toContain(`nonce="${KEPT_NONCE}"`);
+  });
+
+  it('answers 503 when an encoded gate document fails before completing', async () => {
+    const partial = encoded(savedDocument(), ['gzip']).subarray(0, 10);
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(partial);
+        controller.error(new Error('encoded gate stream interrupted'));
+      },
+    });
+    const { response } = await routed('GET', answer(body, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+  });
+
+  it('refuses an encoded gate document immediately when GATE_TIMEOUT_MS is already spent', async () => {
+    let cancelled = false;
+    let reads = 0;
+    vi.spyOn(performance, 'now').mockImplementation(() => {
+      reads += 1;
+      return reads * (GATE_TIMEOUT_MS + 1);
+    });
+    const stalled = new ReadableStream<Uint8Array>({
+      pull: () => {
+        return new Promise<void>(() => {
+          /* Never yields a chunk. */
+        });
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const { response } = await routed('GET', answer(stalled, 'gzip'), { cspNonce: true });
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+  });
+
+  it('aborts an in-flight stalled encoded gate document when the GATE_TIMEOUT_MS timer fires', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'performance', 'setTimeout', 'clearTimeout'] });
+    let cancelled = false;
+    const { promise: pulled, resolve: markPulled } = Promise.withResolvers<undefined>();
+    const { promise: onCancel, resolve: markCancelled } = Promise.withResolvers<undefined>();
+    const stalled = new ReadableStream<Uint8Array>({
+      pull() {
+        markPulled(undefined);
+        return new Promise<void>(() => {
+          /* Never yields a chunk. */
+        });
+      },
+      cancel() {
+        cancelled = true;
+        markCancelled(undefined);
+      },
+    });
+    const pending = routed('GET', answer(stalled, 'gzip'), { cspNonce: true });
+    await pulled;
+    await vi.advanceTimersByTimeAsync(GATE_TIMEOUT_MS - 1);
+
+    expect(cancelled).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(1);
+    const { response } = await pending;
+    await onCancel;
+
+    expect(response.status).toBe(UNAVAILABLE_STATUS);
+    expect(response.headers.get(EDGE_DEBUG_HEADER)).toBe('error;reason=gate-unavailable');
+    expect(response.headers.has(CSP)).toBe(false);
+    expect(cancelled).toBe(true);
+  });
 
   it('keeps unsupported coding opaque when nonce handling is off', async () => {
     const bytes = new TextEncoder().encode(savedDocument());
