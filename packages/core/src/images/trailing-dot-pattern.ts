@@ -4,9 +4,9 @@ import { countedAt } from '../request/pattern-tree.ts';
 
 /**
  * Rewrites explicit branch-final dot atoms (`\.` or non-negated character classes containing `.`)
- * outside negative lookarounds to be optional, while keeping mandatory delimiters intact in
- * earlier iterations of repeated groups. Returns `undefined` when no branch of `source` explicitly
- * spells a trailing dot.
+ * outside lookarounds to be optional, while keeping mandatory delimiters intact in earlier
+ * iterations of repeated groups. Returns `undefined` when no branch of `source` explicitly spells
+ * a trailing dot.
  */
 
 interface SpanRewrite {
@@ -36,7 +36,6 @@ interface OpenGroup {
   readonly sourceStart: number;
   readonly bodyStart: number;
   readonly lookaround: boolean;
-  readonly negative: boolean;
   readonly unrollable: boolean;
   readonly allowRewrite: boolean;
   branchNullable: boolean;
@@ -139,20 +138,17 @@ function readGroupPrefix(
 ): {
   readonly next: number;
   readonly lookaround: boolean;
-  readonly negative: boolean;
   readonly unrollable: boolean;
 } {
   const contents = groupContents(source, start);
   if (contents !== undefined) {
-    return { next: contents, lookaround: false, negative: false, unrollable: true };
+    return { next: contents, lookaround: false, unrollable: true };
   }
   if (isLookaround(source, start)) {
     const behind = source.startsWith('(?<', start);
-    const negative = source.startsWith('(?!', start) || source.startsWith('(?<!', start);
     return {
       next: start + (behind ? LOOKBEHIND_LEN : LOOKAHEAD_LEN),
       lookaround: true,
-      negative,
       unrollable: false,
     };
   }
@@ -162,7 +158,7 @@ function readGroupPrefix(
     colon !== NO_GROUP && (closeParen === NO_GROUP || colon < closeParen)
       ? colon + 1
       : start + ESCAPE_STEP;
-  return { next, lookaround: false, negative: false, unrollable: false };
+  return { next, lookaround: false, unrollable: false };
 }
 
 function setSpellsLiteralDot(source: string, start: number, end: number): boolean {
@@ -240,9 +236,8 @@ function openGroupAt(state: TokenizerState, cursor: number, allowRewrite: boolea
     sourceStart: cursor,
     bodyStart: prefix.next,
     lookaround: prefix.lookaround,
-    negative: prefix.negative,
     unrollable: prefix.unrollable,
-    allowRewrite: allowRewrite && !prefix.negative,
+    allowRewrite: allowRewrite && !prefix.lookaround,
     branchNullable: true,
     anyBranchNullable: false,
   });
@@ -259,7 +254,8 @@ function closeGroupAt(state: TokenizerState, cursor: number): number {
   const closed = state.stack.pop();
   const quant = readQuantifierBounds(state.source, cursor + 1);
   const closeIndex = state.items.length;
-  state.items.push({ kind: 'close', blocksInner: quant.repeats || quant.max === 0 });
+  const blocksInner = closed?.lookaround === true || quant.repeats || quant.max === 0;
+  state.items.push({ kind: 'close', blocksInner });
   if (closed !== undefined) {
     const openItem = state.items[closed.itemIndex];
     const nullable =
@@ -322,7 +318,7 @@ function escapedAt(state: TokenizerState, cursor: number, allowRewrite: boolean)
 }
 
 function stepTokenizer(state: TokenizerState, cursor: number): number {
-  const allowRewrite = state.stack.every((group) => !group.negative);
+  const allowRewrite = state.stack.every((group) => !group.lookaround);
   switch (state.source[cursor]) {
     case '(': {
       return openGroupAt(state, cursor, allowRewrite);

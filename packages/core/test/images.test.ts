@@ -437,15 +437,26 @@ describe('parseImageRequest', () => {
         { protocol: 'https', hostname: String.raw`^(?:(?:a+)+\.|b)$`, pathname: anyPathname },
       ],
     };
+    const positiveLookaheadDot = String.raw`^(?=.*\.).*$`;
+    const multiLabelOnlyConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: positiveLookaheadDot, pathname: anyPathname },
+      ],
+    };
     const fortyAsAndBDot = remote(`https://${'a'.repeat(40)}b./a.png`);
     const multiLabelDot = remote('https://aaa.aaa./a.png');
     const unverifiedDot = remote('https://a./a.png');
+    const singleLabelDot = remote('https://intranet./a.png');
 
     expect(rewritten).toBeDefined();
     expect(unsafeSourcePatternReason(rewritten ?? '', [''])).toBeUndefined();
+    expect(withoutTrailingDotSource(positiveLookaheadDot)).toBeUndefined();
     expect(parse(fortyAsAndBDot, null, delimitedConfig).kind).toBe('ok');
     expect(parse(multiLabelDot, null, delimitedConfig).kind).toBe('ok');
+    expect(parse(multiLabelDot, null, multiLabelOnlyConfig).kind).toBe('ok');
     expect(errorOf(parse(unverifiedDot, null, unsafeUncheckedConfig))).toBe(notAllowed);
+    expect(errorOf(parse(singleLabelDot, null, multiLabelOnlyConfig))).toBe(notAllowed);
   });
 
   it('keeps the source format for a client that names none offered', () => {
