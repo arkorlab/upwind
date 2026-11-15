@@ -103,7 +103,7 @@ describe("the edge's version for a deployment", () => {
     const uploaded = newest(fake);
 
     expect(uploaded.metadata).toMatchObject({
-      compatibility_flags: ['nodejs_compat'],
+      compatibility_flags: ['nodejs_compat', 'enable_request_signal'],
       annotations: {
         'workers/tag': edgeTag(first, input.pointer),
         'workers/message': `upwind deploy ${first}`,
