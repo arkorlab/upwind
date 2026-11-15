@@ -5,7 +5,7 @@
  * <fixture> is one of `FIXTURES`. The adapter is named by `NEXT_ADAPTER_PATH`, so a fixture's own
  * Next.js config stays as it is. Optional diagnostic: append --server-minification=off. This is
  * a separate build condition.
- * The Linux runner must provide an empty, writable /bundle, Node24.22.3 or Node26.13.1, pnpm12.16.1 and a C++
+ * The Linux runner must provide an empty, writable /bundle, Node24.22.3 or Node26.13.1, pnpm12.18.0 and a C++
  * toolchain/Python for node-gyp. Run after the SDK's normal build. This is not a hosted measurement.
  */
 import assert from 'node:assert/strict';
@@ -45,7 +45,7 @@ const NEXT_VERSION = process.env['UPWIND_NATIVE_NEXT'] ?? '16.4.3';
 const NEXT_COMMIT =
   NEXT_RELEASES[NEXT_VERSION] ?? assert.fail(`Unreviewed Next.js ${NEXT_VERSION}`);
 const NODE_VERSION = process.versions.node;
-const PNPM_VERSION = '12.16.1';
+const PNPM_VERSION = '12.18.0';
 const REACT_VERSION = '19.3.0';
 const PROBE_MS = 30_000;
 const POLL_MS = 100;
