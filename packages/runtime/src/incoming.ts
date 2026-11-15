@@ -8,10 +8,17 @@ import {
 } from '@stayingupwind/core/paas';
 import {
   BYPASS_QUERY_PREFIXES,
+  compiledBoundedHtmlLimitedBots,
   isBotUserAgent,
   isHtmlLimitedBotUserAgent,
+  longestAffordable,
+  MAX_TESTED_USER_AGENT_LENGTH,
+  NEXT_HTML_LIMITED_BOTS,
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
+  patternCost,
+  runsBoundedHtmlLimitedBots,
+  unsafeSourcePatternReason,
 } from '@stayingupwind/core/request';
 
 import type { ServedObservation } from './cache/host.ts';
@@ -206,22 +213,51 @@ export function hasBody(method: string): boolean {
   return method !== 'GET' && method !== 'HEAD';
 }
 
-/** `htmlLimitedBots` compiled, by its pattern: one application's, for every request it serves. */
-const compiledBots = new Map<string, RegExp | undefined>();
+interface CompiledBotsEntry {
+  readonly invalid?: true;
+  readonly regex: RegExp | undefined;
+  readonly maxLength: number;
+}
 
-function botsRegexOf(pattern: string): RegExp | undefined {
-  if (!compiledBots.has(pattern)) {
-    let regex: RegExp | undefined;
-    try {
-      // Compiled as Next.js compiles it, case-insensitive and without the unicode flag.
-      // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
-      regex = new RegExp(pattern, 'i');
-    } catch {
-      regex = undefined;
-    }
-    compiledBots.set(pattern, regex);
+/** `htmlLimitedBots` compiled with its bounded User-Agent length, cached per pattern. */
+const botsByPattern = new Map<string, CompiledBotsEntry>();
+
+function compileBotsPattern(pattern: string): RegExp | undefined {
+  try {
+    // Compiled as Next.js compiles it, case-insensitive and without the unicode flag.
+    // eslint-disable-next-line security/detect-non-literal-regexp, require-unicode-regexp
+    return new RegExp(pattern, 'i');
+  } catch {
+    return undefined;
   }
-  return compiledBots.get(pattern);
+}
+
+function buildBotsEntry(pattern: string): CompiledBotsEntry {
+  const rawRegex = compileBotsPattern(pattern);
+  if (rawRegex === undefined) {
+    return { invalid: true, regex: undefined, maxLength: 0 };
+  }
+  if (unsafeSourcePatternReason(pattern, ['i']) !== undefined) {
+    return { regex: undefined, maxLength: 0 };
+  }
+  const cost = patternCost(pattern, 'i', false);
+  const affordable = Math.max(0, longestAffordable(cost));
+  const maxLength = runsBoundedHtmlLimitedBots(pattern)
+    ? MAX_TESTED_USER_AGENT_LENGTH
+    : Math.min(MAX_TESTED_USER_AGENT_LENGTH, affordable);
+  return {
+    regex: compiledBoundedHtmlLimitedBots(pattern) ?? rawRegex,
+    maxLength,
+  };
+}
+
+function botsEntryOf(pattern: string): CompiledBotsEntry {
+  let entry = botsByPattern.get(pattern);
+  if (entry === undefined) {
+    entry = buildBotsEntry(pattern);
+    botsByPattern.set(pattern, entry);
+  }
+  return entry;
 }
 
 /**
@@ -236,10 +272,17 @@ export function wantsBlockingMetadata(request: Request, pattern: string | undefi
   if (userAgent === null || userAgent === '') {
     return false;
   }
-  if (pattern === undefined || pattern === '') {
+  if (pattern === undefined || pattern === '' || pattern === NEXT_HTML_LIMITED_BOTS) {
     return isHtmlLimitedBotUserAgent(userAgent);
   }
-  return botsRegexOf(pattern)?.test(userAgent) ?? false;
+  const entry = botsEntryOf(pattern);
+  if (entry.invalid === true) {
+    return false;
+  }
+  if (userAgent.length > entry.maxLength) {
+    return true;
+  }
+  return entry.regex?.test(userAgent) ?? false;
 }
 
 /**

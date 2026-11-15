@@ -751,13 +751,13 @@ describe('a local stack', () => {
       return seen;
     };
 
-    // A visitor's own header of the name reaches the site as it would deployed.
+    // Forwarding strips internal `x-upwind-*` headers before any Function sees them.
     const visitor = await echoed('visitor');
     const registered = await fetch(new URL('trace/checked', stack.backstage), { method: 'PUT' });
     const checked = await echoed('checked');
-    // Good for one request: asked again, the id is a visitor's header again.
+    // Good for one request: asked again, the id is no longer traced either.
     const again = await echoed('checked');
-    // Registered with a value of the header's own, which the request goes on with in its place.
+    // Registered with a value for the edge's own routing, still stripped before the Function.
     await fetch(new URL('trace/carried?as=its-own', stack.backstage), { method: 'PUT' });
     const carried = await echoed('carried');
     // No middleware ran and nothing was regenerated, so nothing was kept but the request itself.
@@ -769,12 +769,7 @@ describe('a local stack', () => {
     const generation = await fetch(new URL('generation/scope/entry/1', stack.backstage));
 
     expect(registered.status).toBe(204);
-    expect([visitor, checked, again, carried]).toStrictEqual([
-      'visitor',
-      null,
-      'checked',
-      'its-own',
-    ]);
+    expect([visitor, checked, again, carried]).toStrictEqual([null, null, null, null]);
     await expect(kept.json()).resolves.toStrictEqual({
       decision: null,
       regenerated: null,
@@ -808,8 +803,8 @@ describe('a local stack', () => {
 
     expect(letGo).toStrictEqual([204, 204]);
     expect(kept.status).toBe(404);
-    // A visitor's own header of the name, as for an id never registered.
-    await expect(traced.json()).resolves.toMatchObject({ trace: 'unsent' });
+    // Internal `x-upwind-*` headers are stripped before the Function, whether registered or not.
+    await expect(traced.json()).resolves.toMatchObject({ trace: null });
   });
 
   it('lets go of the oldest traces no check read past its bound, never the one read next', async () => {

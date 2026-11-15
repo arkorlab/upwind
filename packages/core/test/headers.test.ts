@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   filterShellResponseHeaders,
   filterStoredResponseHeaders,
+  handedOnAsSent,
   rewritePassthroughResponseHeaders,
   sanitizeContinuationHeaders,
   sanitizePassthroughHeaders,
@@ -122,6 +123,28 @@ describe('sanitizePassthroughHeaders', () => {
 
     expect(out.get('x-middleware-prefetch')).toBe('1');
     expect(out.has('x-middleware-set-cookie')).toBe(false);
+  });
+
+  it.each([
+    'x-invocation-id',
+    'x-action-forwarded',
+    'x-matched-path',
+    'x-now-route-matches',
+    'x-next-revalidated-tags',
+    'x-next-revalidate-tag-token',
+    'x-next-cache-tags',
+    'x-upwind-gate-verified',
+    'x-upwind-gate-capture',
+  ])('strips client-supplied internal header %s before forwarding', (name) => {
+    const incoming = new Headers({ [name.toUpperCase()]: 'forged', 'x-app-custom': 'kept' });
+
+    const passthrough = sanitizePassthroughHeaders(incoming, ctx);
+    const continuation = sanitizeContinuationHeaders(incoming, ctx);
+
+    expect(passthrough.has(name)).toBe(false);
+    expect(continuation.has(name)).toBe(false);
+    expect(passthrough.get('x-app-custom')).toBe('kept');
+    expect(handedOnAsSent(name)).toBe(false);
   });
 });
 

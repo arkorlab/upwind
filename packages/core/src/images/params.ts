@@ -1,7 +1,9 @@
 import { testWithin } from '../request/pattern-budget.ts';
+import { IMAGE_FLAGS, unsafeSourcePatternReason } from '../request/pattern-shape.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
-import { isLocalAddress } from './local-address.ts';
+import { isLocalAddress, normalizeImageHostname } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';
+import { withoutTrailingDotSource } from './trailing-dot-pattern.ts';
 
 /**
  * `/_next/image?url=…&w=…&q=…`, checked the way Next.js's own optimizer checks it
@@ -47,7 +49,13 @@ function invalid(errorMessage: string): Invalid {
  * object, on the first image request rather than when the manifest is parsed, so a manifest with
  * images costs a document request nothing.
  */
-const remoteRegExps = new WeakMap<ImageRemotePattern, { hostname: RegExp; pathname: RegExp }>();
+interface CompiledRemotePattern {
+  readonly hostname: RegExp;
+  readonly pathname: RegExp;
+  withoutTrailingDot?: RegExp | false;
+}
+
+const remoteRegExps = new WeakMap<ImageRemotePattern, CompiledRemotePattern>();
 const localRegExps = new WeakMap<ImageLocalPattern, RegExp>();
 
 function compile(source: string): RegExp {
@@ -56,13 +64,35 @@ function compile(source: string): RegExp {
   return new RegExp(source);
 }
 
-function remoteRegExpsOf(pattern: ImageRemotePattern): { hostname: RegExp; pathname: RegExp } {
+function remoteRegExpsOf(pattern: ImageRemotePattern): CompiledRemotePattern {
   let regexps = remoteRegExps.get(pattern);
   if (regexps === undefined) {
     regexps = { hostname: compile(pattern.hostname), pathname: compile(pattern.pathname) };
     remoteRegExps.set(pattern, regexps);
   }
   return regexps;
+}
+
+function trailingDotRegExpOf(
+  regexps: CompiledRemotePattern,
+  pattern: ImageRemotePattern,
+): RegExp | false {
+  if (regexps.withoutTrailingDot === undefined) {
+    const rewritten = withoutTrailingDotSource(pattern.hostname);
+    if (
+      rewritten === undefined ||
+      unsafeSourcePatternReason(rewritten, IMAGE_FLAGS) !== undefined
+    ) {
+      regexps.withoutTrailingDot = false;
+    } else {
+      try {
+        regexps.withoutTrailingDot = compile(rewritten);
+      } catch {
+        regexps.withoutTrailingDot = false;
+      }
+    }
+  }
+  return regexps.withoutTrailingDot;
 }
 
 function localRegExpOf(pattern: ImageLocalPattern): RegExp {
@@ -74,6 +104,23 @@ function localRegExpOf(pattern: ImageLocalPattern): RegExp {
   return regexp;
 }
 
+function matchesTrailingDotHostname(
+  regexps: CompiledRemotePattern,
+  pattern: ImageRemotePattern,
+  url: URL,
+  normalizedHostname: string,
+): boolean {
+  if (normalizedHostname === '' || !url.hostname.endsWith('.')) {
+    return false;
+  }
+  const withoutTrailingDot = trailingDotRegExpOf(regexps, pattern);
+  return (
+    withoutTrailingDot !== false &&
+    testWithin(regexps.hostname, `${normalizedHostname}.`) &&
+    testWithin(withoutTrailingDot, normalizedHostname)
+  );
+}
+
 function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
   if (pattern.protocol !== undefined && pattern.protocol !== url.protocol.replace(/:$/u, '')) {
     return false;
@@ -82,7 +129,11 @@ function matchesRemotePattern(pattern: ImageRemotePattern, url: URL): boolean {
     return false;
   }
   const regexps = remoteRegExpsOf(pattern);
-  if (!testWithin(regexps.hostname, url.hostname)) {
+  const normalizedHostname = normalizeImageHostname(url.hostname);
+  if (
+    !testWithin(regexps.hostname, normalizedHostname) &&
+    !matchesTrailingDotHostname(regexps, pattern, url, normalizedHostname)
+  ) {
     return false;
   }
   if (pattern.search !== undefined && pattern.search !== url.search) {
@@ -100,14 +151,27 @@ function matchesLocalPattern(pattern: ImageLocalPattern, url: URL): boolean {
 
 /** A pathname parsed the way Next.js parses one: against a placeholder origin it never uses. */
 const LOCAL_BASE = 'https://n';
+const NON_ASCII_HOST = /\P{ASCII}/u;
+const NOT_HOST_NAME = /[\s#%/:<>?@[\\\]^|]/u;
+
+function normalizedConfiguredDomain(domain: string): string {
+  if (NON_ASCII_HOST.test(domain) && !NOT_HOST_NAME.test(domain)) {
+    const probe = `http://${domain}`;
+    if (URL.canParse(probe)) {
+      return normalizeImageHostname(new URL(probe).hostname);
+    }
+  }
+  return normalizeImageHostname(domain);
+}
 
 function localAllowed(config: ImagesConfig, url: URL): boolean {
   return config.localPatterns.some((pattern) => matchesLocalPattern(pattern, url));
 }
 
 function remoteAllowed(config: ImagesConfig, url: URL): boolean {
+  const hostname = normalizeImageHostname(url.hostname);
   return (
-    config.domains.includes(url.hostname) ||
+    config.domains.some((domain) => normalizedConfiguredDomain(domain) === hostname) ||
     config.remotePatterns.some((pattern) => matchesRemotePattern(pattern, url))
   );
 }
