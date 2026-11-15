@@ -8,6 +8,7 @@ import { imageFilename, imageResponseHeaders, upstreamMaxAge } from '../src/imag
 import { isLocalAddress } from '../src/images/local-address.ts';
 import { negotiateImageFormat } from '../src/images/negotiate.ts';
 import { type ImageRequestResult, parseImageRequest } from '../src/images/params.ts';
+import { withoutTrailingDotSource } from '../src/images/trailing-dot-pattern.ts';
 import { unsafeSourcePatternReason } from '../src/request/pattern-safety.ts';
 
 /**
@@ -419,6 +420,32 @@ describe('parseImageRequest', () => {
     expect(errorOf(parse(excludedDot, null, negatedMixed))).toBe(notAllowed);
     expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe(notAllowed);
     expect(errorOf(parse(localhostDot, null, anyHttp))).toBe(notAllowed);
+  });
+
+  it('keeps repeated-group delimiters mandatory and refuses unsafe trailing-dot rewrites', () => {
+    const anyPathname = '^.*$';
+    const notAllowed = '"url" parameter is not allowed';
+    const repeatedHost = String.raw`^(?:(?:a+\.)+|a+b\.)$`;
+    const rewritten = withoutTrailingDotSource(repeatedHost);
+    const delimitedConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [{ protocol: 'https', hostname: repeatedHost, pathname: anyPathname }],
+    };
+    const unsafeUncheckedConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^(?:(?:a+)+\.|b)$`, pathname: anyPathname },
+      ],
+    };
+    const fortyAsAndBDot = remote(`https://${'a'.repeat(40)}b./a.png`);
+    const multiLabelDot = remote('https://aaa.aaa./a.png');
+    const unverifiedDot = remote('https://a./a.png');
+
+    expect(rewritten).toBeDefined();
+    expect(unsafeSourcePatternReason(rewritten ?? '', [''])).toBeUndefined();
+    expect(parse(fortyAsAndBDot, null, delimitedConfig).kind).toBe('ok');
+    expect(parse(multiLabelDot, null, delimitedConfig).kind).toBe('ok');
+    expect(errorOf(parse(unverifiedDot, null, unsafeUncheckedConfig))).toBe(notAllowed);
   });
 
   it('keeps the source format for a client that names none offered', () => {

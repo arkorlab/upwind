@@ -52,7 +52,7 @@ export {
   PatternBudgetExceededError,
 } from './pattern-budget.ts';
 export { longestAffordable, type PatternCost, patternCost } from './pattern-cost.ts';
-export { unsafeSourcePatternReason } from './pattern-safety.ts';
+export { unsafeSourcePatternReason } from './pattern-shape.ts';
 export * from './constants.ts';
 export {
   answeredAsCandidate,

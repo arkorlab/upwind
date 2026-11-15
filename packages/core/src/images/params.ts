@@ -1,4 +1,5 @@
 import { testWithin } from '../request/pattern-budget.ts';
+import { IMAGE_FLAGS, unsafeSourcePatternReason } from '../request/pattern-shape.ts';
 import type { ImageLocalPattern, ImageRemotePattern, ImagesConfig } from './config.ts';
 import { isLocalAddress, normalizeImageHostname } from './local-address.ts';
 import { negotiateImageFormat } from './negotiate.ts';
@@ -78,7 +79,10 @@ function trailingDotRegExpOf(
 ): RegExp | false {
   if (regexps.withoutTrailingDot === undefined) {
     const rewritten = withoutTrailingDotSource(pattern.hostname);
-    if (rewritten === undefined) {
+    if (
+      rewritten === undefined ||
+      unsafeSourcePatternReason(rewritten, IMAGE_FLAGS) !== undefined
+    ) {
       regexps.withoutTrailingDot = false;
     } else {
       try {
