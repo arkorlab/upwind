@@ -15,11 +15,12 @@ import {
 } from '../src/node-next-release.ts';
 
 const require = createRequire(import.meta.url);
-/** Each supported release, installed under its alias. */
+/** Each supported release, installed: 16.4.3 to 16.4.5 under their aliases, 16.4.6 as the catalog's. */
 const INSTALLED = [
   { version: '16.4.3', root: path.dirname(require.resolve('next-16-4-3/package.json')) },
   { version: '16.4.4', root: path.dirname(require.resolve('next-16-4-4/package.json')) },
   { version: '16.4.5', root: path.dirname(require.resolve('next-16-4-5/package.json')) },
+  { version: '16.4.6', root: path.dirname(require.resolve('next/package.json')) },
 ] as const;
 /** Reviewed sources the two releases publish with the same bytes. */
 const SHARED = [
@@ -88,6 +89,28 @@ describe('the Next.js releases the native Node path qualifies', () => {
     expect(isForeignReleaseSource(latest!, appPage, previous?.source(appPage) ?? '')).toBe(true);
     expect(nativeNextReleaseOf(latest!.packageJsonSha256, '16.4.5')).toBe(latest);
     expect(nativeNextReleaseOf(previous!.packageJsonSha256, '16.4.5')).toBeUndefined();
+  });
+
+  it('takes the sources 16.4.6 publishes as 16.4.5 does as either one’s own', () => {
+    const previous = NATIVE_NEXT_RELEASES.at(-2);
+    const latest = NATIVE_NEXT_RELEASES.at(-1);
+    const template = 'dist/build/templates/app-page-runtime.js';
+    const pages = 'dist/compiled/next-server/pages.runtime.prod.js';
+    const appRoute = 'dist/compiled/next-server/app-route.runtime.prod.js';
+
+    // 16.4.6 publishes the page template and the Pages runtimes as 16.4.5 does, and the App
+    // Router ones anew: its header change reaches only those.
+    expect([previous?.version, latest?.version]).toStrictEqual(['16.4.5', '16.4.6']);
+
+    for (const shared of [template, pages]) {
+      expect(latest?.source(shared)).toBe(previous?.source(shared));
+      expect(isForeignReleaseSource(latest!, shared, previous?.source(shared) ?? '')).toBe(false);
+    }
+
+    expect(latest?.source(appRoute)).not.toBe(previous?.source(appRoute));
+    expect(isForeignReleaseSource(latest!, appRoute, previous?.source(appRoute) ?? '')).toBe(true);
+    expect(nativeNextReleaseOf(latest!.packageJsonSha256, '16.4.6')).toBe(latest);
+    expect(nativeNextReleaseOf(previous!.packageJsonSha256, '16.4.6')).toBeUndefined();
   });
 
   it('keeps every release pin immutable to the code that imports it', () => {
