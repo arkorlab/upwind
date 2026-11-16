@@ -50,6 +50,7 @@
     "next": "catalog:",
     "next-16-4-3": "npm:next@16.4.3",
     "next-16-4-4": "npm:next@16.4.4",
+    "next-16-4-5": "npm:next@16.4.5",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

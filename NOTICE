@@ -17,7 +17,7 @@ under the MIT license:
     AGENTS.md, verbatim from Next.js's own server/lib/generate-agent-files.js
     (packages/create-upwind/src/agents.ts).
   * Cases of Next.js's own end-to-end tests, copied from test/e2e at v16.4.3 and
-    unchanged at v16.4.5, with the branches they take when deployed resolved to
+    unchanged at v16.4.6, with the branches they take when deployed resolved to
     the other side, which the deploy tests run against deployments
     (tools/deploy-tests/supplements).
 

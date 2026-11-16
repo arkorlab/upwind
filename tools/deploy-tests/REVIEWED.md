@@ -22,6 +22,17 @@ A reading is one of four:
 - **The environment.** The target's runtime cannot run the application, or no deployment can run it
   as it is written.
 
+## Next.js 16.4.6
+
+Read again at commit `54b876b6b161b0ecda19562eb264bec637e60d6d`: every reading of 16.4.5 holds at
+16.4.6 as it is written. 16.4.6 changes none of the suites read. Its test changes are
+create-next-app's prompts, `no-double-tailwind-execution`, and the compression suite, which moves from
+`test/development` to `test/e2e` with new route handler cases, so deploy mode runs it for the first
+time. None of them has a reading. These readings are read from the sources alone, and the supported
+release (`NIGHTLY_NEXTJS_REF`) stays at 16.4.5 for now: the compression suite asks every deployment
+for gzip, which the runner's targets leave to the edge they do not have, so a run at 16.4.6 is to be
+read before a night's run or a pull request's is held to it.
+
 ## Next.js 16.4.5
 
 Read again at commit `4e5335a00314be7fbb2aace5e9be56a88e64e5a8`: every reading of 16.4.4 holds at

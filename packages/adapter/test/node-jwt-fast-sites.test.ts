@@ -26,7 +26,7 @@ const require = createRequire(import.meta.url);
 const ROOTS = {
   '16.4.3': path.dirname(require.resolve('next-16-4-3/package.json')),
   '16.4.4': path.dirname(require.resolve('next-16-4-4/package.json')),
-  '16.4.5': path.dirname(require.resolve('next/package.json')),
+  '16.4.5': path.dirname(require.resolve('next-16-4-5/package.json')),
 } as const;
 const FILE = path.join(ROOTS['16.4.4'], 'dist/compiled/fast-jwt/index.js');
 const CODE = readFileSync(FILE, 'utf8');

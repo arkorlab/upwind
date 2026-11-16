@@ -62,7 +62,7 @@ repository at a ref the run chose, and its applications' `package.json` scripts 
 hook. So: the hook runs a fixture's install and build with these variables removed, the workflow keeps
 the token in a file — there for the preflight alone, and then not again until Next.js is built — and
 gives the suite only its path, and a dispatch's `nextjsRef` has to name a release tag of Next.js
-(`v16.4.5`, `v16.5.0-canary.39`). None of that
+(`v16.4.6`, `v16.5.0-canary.46`). None of that
 is a boundary — a fixture's build and the deploy hook are the same user on the same machine, and a
 process can read what another process of its own user can. What it removes is the ordinary way a secret
 escapes, which is something printing the environment it was handed. So use a credential whose loss is
@@ -207,14 +207,14 @@ appended `pnpm post-build`, and `postbuild`, so the pnpm setup above is still re
 
 The npm option currently requires **npm 11.19.1**. It uses a two-day minimum release age and allows
 git, remote, directory and file dependencies only when declared by the root application. Its package
-name exemptions match the unversioned entries in the test-install security profile of Next.js 16.4.3,
-16.4.4 and 16.4.5, which is the same in all three.
+name exemptions match the unversioned entries in the test-install security profile of Next.js 16.4.3
+through 16.4.6, which is the same in all four.
 That profile also has five version-qualified exemptions; npm's name-only matcher cannot express
 them, so this hook omits them rather than exempting every version of those packages. The npm policy
 is consequently more restrictive for those entries.
 
 This is a narrow opt-in: an absent `pnpm-workspace.yaml`, or the exact three-key security profile
-written by Next.js 16.4.3, 16.4.4 and 16.4.5 (standard js-yaml YAML or canonical JSON), is supported.
+written by Next.js 16.4.3 through 16.4.6 (standard js-yaml YAML or canonical JSON), is supported.
 Other workspace settings, comments, reordered or custom security profiles are rejected instead of
 being silently ignored. The hook also checks npm's effective security settings privately: a custom
 `before`, age, exemption list or stricter exotic-dependency restriction fails before installation.
