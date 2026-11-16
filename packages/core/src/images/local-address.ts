@@ -155,13 +155,22 @@ function ipv6IsLocal(value: bigint): boolean {
   return IPV6_SPECIAL.some((special) => within(value, special, IPV6_BITS));
 }
 
+/** `hostname` in lower case and without any trailing FQDN root dots. */
+export function normalizeImageHostname(hostname: string): string {
+  let end = hostname.length;
+  while (end > 0 && hostname[end - 1] === '.') {
+    end -= 1;
+  }
+  return (end === hostname.length ? hostname : hostname.slice(0, end)).toLowerCase();
+}
+
 /**
  * Whether `hostname`, as a URL carries it (an IPv6 address in brackets), names an address the
  * optimizer refuses without `dangerouslyAllowLocalIP` — or `localhost`, written with or without
  * the root's own trailing dot, which a URL keeps on a name and which names the same host.
  */
 export function isLocalAddress(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/u, '');
+  const host = normalizeImageHostname(hostname);
   if (host === 'localhost' || host.endsWith('.localhost')) {
     return true;
   }

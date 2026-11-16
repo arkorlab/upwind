@@ -5932,9 +5932,9 @@ describe('what the check makes of the middleware', () => {
       ]);
     });
 
-    it("is asked carrying the stack's own trace header where a rule claims a request without it", async () => {
+    it("is the rule's where a rule claims a request lacking a stripped internal header", async () => {
       const routes = [await routeOf('/', FRONT)];
-      answers.set('/', documentAnswer(FRONT, 'mw=miss;route=/'));
+      answers.set('/', handedOnAs('passthrough;reason=route-not-proved'));
       const untraced: ReservedRoute = {
         sourceRegex: '^/$',
         beforeFiles: true,
@@ -5942,9 +5942,10 @@ describe('what the check makes of the middleware', () => {
       };
       const result = await checkStack(stackOf(routes, {}, { reservedRoutes: [untraced] }));
 
-      expect(result).toStrictEqual({ checked: 1, failures: [], skipped: [] });
-      // The check's id goes under the name, and the value the rule asks for back in its place.
-      expect(restored.get('/')).toBe('1');
+      expect(result.skipped).toStrictEqual([
+        { path: '/', reason: 'claimed by a redirect or rewrite of next.config' },
+      ]);
+      expect(restored.get('/')).toBeNull();
     });
 
     it('is asked carrying the cookie a rule claims every request of the check without', async () => {

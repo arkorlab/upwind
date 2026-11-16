@@ -6,7 +6,9 @@ import { AuditError } from './dependencies.ts';
 export function nodeGuardVersion(): GuardedNodeVersion {
   const version = process.versions.node;
   if (!isGuardedNodeVersion(version))
-    throw new AuditError('Fixed Next initialization requires Node 24.22.1 or 26.13.0');
+    throw new AuditError(
+      'Fixed Next initialization requires Node 24.22.1, 24.22.3, 26.13.0 or 26.13.1',
+    );
   return version;
 }
 

@@ -2,8 +2,12 @@ export { negotiateContentEncoding } from './accept.ts';
 export { hasRouteBodyControlHeader } from './route-bodies.ts';
 export {
   bypassForHolds,
+  compiledBoundedHtmlLimitedBots,
   judgesHtmlLimitedBots,
+  MAX_TESTED_USER_AGENT_LENGTH,
+  NEXT_HTML_LIMITED_BOTS,
   passesOnEveryAgent,
+  runsBoundedHtmlLimitedBots,
   wantsBlockingMetadata,
 } from './blocking-metadata.ts';
 export {
@@ -47,6 +51,8 @@ export {
   type PatternBudget,
   PatternBudgetExceededError,
 } from './pattern-budget.ts';
+export { longestAffordable, type PatternCost, patternCost } from './pattern-cost.ts';
+export { unsafeSourcePatternReason } from './pattern-shape.ts';
 export * from './constants.ts';
 export {
   answeredAsCandidate,

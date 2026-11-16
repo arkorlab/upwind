@@ -155,7 +155,9 @@ describe('after-response work across real Worker request lifetimes', () => {
     const response = await fetch(new URL(path, origin), {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+
     expect(response.status).toBe(expectedStatus);
+
     return response.text();
   }
 
@@ -164,7 +166,9 @@ describe('after-response work across real Worker request lifetimes', () => {
     const response = await fetch(new URL(`/states?${query}`, origin), {
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
+
     expect(response.status).toBe(200);
+
     return (await response.json()) as BackgroundState[];
   }
 
@@ -172,9 +176,11 @@ describe('after-response work across real Worker request lifetimes', () => {
     await expect(
       Promise.all([complete('/capture?id=first'), complete('/capture?id=second')]),
     ).resolves.toStrictEqual(['first', 'second']);
+
     const pending = await states('until=started');
 
     expect(pending).toHaveLength(2);
+
     for (const state of pending) {
       expect(state).toMatchObject({
         retained: 1,
@@ -209,6 +215,7 @@ describe('after-response work across real Worker request lifetimes', () => {
 
   it('releases retained background work after a handler rejection', async () => {
     await expect(complete('/reject?id=rejected', 503)).resolves.toBe('handler rejected');
+
     const [pending] = await states('id=rejected&until=started');
 
     expect(pending).toMatchObject({ retained: 1, finished: false, settledAtStart: true });

@@ -22,6 +22,7 @@ declare module 'node:zlib' {
     write(chunk: Uint8Array): boolean;
     flush(kind: number, callback: () => void): void;
     end(): void;
+    close(callback?: () => void): void;
     on(event: 'data', listener: (chunk: Uint8Array) => void): this;
     on(event: 'end', listener: () => void): this;
     on(event: 'error', listener: (error: Error) => void): this;

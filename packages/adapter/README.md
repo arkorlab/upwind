@@ -819,9 +819,11 @@ Each registration becomes a dedicated `functions.durableObjects[name]` FunctionS
 array is carried as top-level `durableObjects`. Its source class is re-exported as `UpwindDurableObject`,
 keeping the native namespace's class identity independent of source refactoring. Source code is
 bundled separately from every Next.js Function, by Rolldown as those are, with Cloudflare and native
-Node imports left to workerd; a `require()` of a built-in becomes an import of it. The Function is
-checked against the existing upload size bound and uses the same compatibility date and flags as the
-other Functions.
+Node imports left to workerd; a `require()` of a built-in becomes an import of it. The bare
+specifier `server-only` is an empty module in this bundle, whichever module imports it and whether
+or not the package is installed, as in Next.js's server bundles; `client-only` and the package's
+subpaths resolve as any import does. The Function is checked against the existing upload size bound
+and uses the same compatibility date and flags as the other Functions.
 
 Imported `.wasm` files travel beside the class code as native compiled modules. Their
 `dependencies.json` entries use `compiledWasmModules: [{ file, module }]`; `wasmModules` remains

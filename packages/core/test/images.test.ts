@@ -8,6 +8,7 @@ import { imageFilename, imageResponseHeaders, upstreamMaxAge } from '../src/imag
 import { isLocalAddress } from '../src/images/local-address.ts';
 import { negotiateImageFormat } from '../src/images/negotiate.ts';
 import { type ImageRequestResult, parseImageRequest } from '../src/images/params.ts';
+import { withoutTrailingDotSource } from '../src/images/trailing-dot-pattern.ts';
 import { unsafeSourcePatternReason } from '../src/request/pattern-safety.ts';
 
 /**
@@ -328,6 +329,136 @@ describe('parseImageRequest', () => {
     expect(result.kind === 'ok' && result.params.quality).toBe(33);
   });
 
+  it('matches normalized and explicit trailing-dot remotePatterns across compound forms', () => {
+    const anyPathname = '^.*$';
+    const byDomain: ImagesConfig = { ...CONFIG, domains: ['allowed.example.com.'] };
+    const withoutDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: anyPathname },
+      ],
+    };
+    const withDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:^(?:cdn\.example\.)$)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const alternationWithDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:cdn\.example\.|other\.example)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const charClassWithDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?:cdn\.example[.]|other\.example)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const cdnDot = remote('https://cdn.example./a.png');
+
+    expect(parse(remote('https://allowed.example.com/a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(remote('https://allowed.example.com./a.png'), null, byDomain).kind).toBe('ok');
+    expect(parse(cdnDot, null, withoutDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, withDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, alternationWithDot).kind).toBe('ok');
+    expect(parse(cdnDot, null, charClassWithDot).kind).toBe('ok');
+  });
+
+  it('preserves negative-lookahead exclusions and local-address blocks on trailing-dot hosts', () => {
+    const anyPathname = '^.*$';
+    const notAllowed = '"url" parameter is not allowed';
+    const withoutDot: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^cdn\.example$`, pathname: anyPathname },
+      ],
+    };
+    const negated: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^(?!evil\.com$).+$`, pathname: anyPathname },
+      ],
+    };
+    const negatedMixed: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        {
+          protocol: 'https',
+          hostname: String.raw`^(?!evil\.com$)(?:cdn\.example\.|[a-z.]+)$`,
+          pathname: anyPathname,
+        },
+      ],
+    };
+    const anyHttp: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [{ protocol: 'http', hostname: anyPathname, pathname: anyPathname }],
+    };
+
+    const cdnDot = remote('https://cdn.example./a.png');
+    const evilDot = remote('https://evil.example./a.png');
+    const excludedDot = remote('https://evil.com./a.png');
+    const loopbackDot = remote('http://127.0.0.1./a.png');
+    const localhostDot = remote('http://localhost./a.png');
+
+    expect(parse(cdnDot, null, negatedMixed).kind).toBe('ok');
+    expect(errorOf(parse(evilDot, null, withoutDot))).toBe(notAllowed);
+    expect(errorOf(parse(excludedDot, null, negated))).toBe(notAllowed);
+    expect(errorOf(parse(excludedDot, null, negatedMixed))).toBe(notAllowed);
+    expect(errorOf(parse(loopbackDot, null, anyHttp))).toBe(notAllowed);
+    expect(errorOf(parse(localhostDot, null, anyHttp))).toBe(notAllowed);
+  });
+
+  it('keeps repeated-group delimiters mandatory and refuses unsafe trailing-dot rewrites', () => {
+    const anyPathname = '^.*$';
+    const notAllowed = '"url" parameter is not allowed';
+    const repeatedHost = String.raw`^(?:(?:a+\.)+|a+b\.)$`;
+    const rewritten = withoutTrailingDotSource(repeatedHost);
+    const delimitedConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [{ protocol: 'https', hostname: repeatedHost, pathname: anyPathname }],
+    };
+    const unsafeUncheckedConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: String.raw`^(?:(?:a+)+\.|b)$`, pathname: anyPathname },
+      ],
+    };
+    const positiveLookaheadDot = String.raw`^(?=.*\.).*$`;
+    const multiLabelOnlyConfig: ImagesConfig = {
+      ...CONFIG,
+      remotePatterns: [
+        { protocol: 'https', hostname: positiveLookaheadDot, pathname: anyPathname },
+      ],
+    };
+    const fortyAsAndBDot = remote(`https://${'a'.repeat(40)}b./a.png`);
+    const multiLabelDot = remote('https://aaa.aaa./a.png');
+    const unverifiedDot = remote('https://a./a.png');
+    const singleLabelDot = remote('https://intranet./a.png');
+
+    expect(rewritten).toBeDefined();
+    expect(unsafeSourcePatternReason(rewritten ?? '', [''])).toBeUndefined();
+    expect(withoutTrailingDotSource(positiveLookaheadDot)).toBeUndefined();
+    expect(parse(fortyAsAndBDot, null, delimitedConfig).kind).toBe('ok');
+    expect(parse(multiLabelDot, null, delimitedConfig).kind).toBe('ok');
+    expect(parse(multiLabelDot, null, multiLabelOnlyConfig).kind).toBe('ok');
+    expect(errorOf(parse(unverifiedDot, null, unsafeUncheckedConfig))).toBe(notAllowed);
+    expect(errorOf(parse(singleLabelDot, null, multiLabelOnlyConfig))).toBe(notAllowed);
+  });
+
   it('keeps the source format for a client that names none offered', () => {
     const result = parse('url=%2Fa.png&w=64&q=75', 'image/*,*/*;q=0.8');
 
@@ -386,6 +517,8 @@ describe('isLocalAddress', () => {
     ['[2606:4700::1111]', false],
     ['localhost', true],
     ['localhost.', true],
+    ['localhost..', true],
+    ['127.0.0.1.', true],
     ['app.localhost', true],
     ['app.localhost.', true],
     ['LOCALHOST', true],

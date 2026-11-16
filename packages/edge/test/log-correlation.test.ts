@@ -116,6 +116,7 @@ describe('a logical request custom log context', () => {
       );
 
       const ids = forwarded.map((asked) => asked.headers.get(LOG_CORRELATION_HEADER));
+
       expect(ids).toHaveLength(2);
       expect(isLogCorrelationId(ids[0])).toBe(true);
       expect(ids[1]).toBe(ids[0]);
@@ -255,6 +256,7 @@ describe('a logical request custom log context', () => {
     expect(sanitizePassthroughHeaders(request.headers, second).has(LOG_CORRELATION_HEADER)).toBe(
       false,
     );
+
     const answer = await routed(site, request, dispatch);
 
     expect(answer.body).toBe('User-agent: *');
@@ -270,8 +272,8 @@ describe('a logical request custom log context', () => {
     const answer = await routed(
       site,
       navigation('/api/external'),
-      () =>
-        Promise.resolve(
+      () => {
+        return Promise.resolve(
           new Response(null, {
             headers: {
               'x-middleware-rewrite': 'https://origin.example/rewritten',
@@ -279,7 +281,8 @@ describe('a logical request custom log context', () => {
               [`x-middleware-request-${LOG_CORRELATION_HEADER}`]: 'middleware-forgery',
             },
           }),
-        ),
+        );
+      },
       {
         manifest: withMiddleware(site),
         external: (request) => {

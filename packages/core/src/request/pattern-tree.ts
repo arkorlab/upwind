@@ -74,7 +74,7 @@ function countsAt(pattern: string, index: number): { readonly min: number; reado
   return { min: Number(body.slice(0, comma)), max: high === '' ? Infinity : Number(high) };
 }
 
-function countedAt(pattern: string, index: number): Counted | undefined {
+export function countedAt(pattern: string, index: number): Counted | undefined {
   const quantifier = quantifierAt(pattern, index);
   if (quantifier === undefined) {
     return undefined;

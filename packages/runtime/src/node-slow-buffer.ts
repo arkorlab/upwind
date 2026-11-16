@@ -13,7 +13,7 @@ const installed: { buffer: Record<string, unknown> | undefined } = { buffer: und
 
 /** Trusted pre-app setup only. Never replace a supplied export or accept a changed installation. */
 export function initializeNodeSlowBuffer(buffer: Record<string, unknown>): void {
-  if (process.versions.node !== '26.13.0') return;
+  if (process.versions.node !== '26.13.0' && process.versions.node !== '26.13.1') return;
   const descriptor = Object.getOwnPropertyDescriptor(buffer, 'SlowBuffer');
   if (installed.buffer === buffer) {
     if (
