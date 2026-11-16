@@ -68,7 +68,7 @@ describe('the private Pages API route output directory', () => {
     const plugin = patchesPlugin([externalPagesApiDistPatch], NORMAL, applied);
     const load = plugin.load;
     assert.ok(load !== undefined && typeof load !== 'function');
-    const result = await load.handler.call({} as never, FILE);
+    const result = await load.handler.call({} as never, FILE, { rawId: FILE, attributes: {} });
 
     expect(result).toBeNull();
     expect(applied).not.toHaveBeenCalled();

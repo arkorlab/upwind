@@ -160,8 +160,8 @@ export async function uploadEdgeVersion(input: EdgeVersionInput): Promise<EdgeVe
   const first = deployments === undefined || deployments.length === 0;
   const form = shippedForm(input.script.script, {
     compatibility_date: COMPATIBILITY_DATE,
-    // The edge compresses as it serves, with `node:zlib`.
-    compatibility_flags: ['nodejs_compat'],
+    // The edge compresses live responses with `node:zlib` and cancels external rewrites on disconnect.
+    compatibility_flags: ['nodejs_compat', 'enable_request_signal'],
     bindings: bindingsOf(input),
     annotations: { 'workers/tag': tag, 'workers/message': input.message },
     ...(input.keepSecrets && { keep_bindings: ['secret_text'] }),

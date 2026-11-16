@@ -129,8 +129,8 @@ safer-buffer, behind a `!o.kStringMaxLength` check. Node.js 24 and 26 define
 the original package, closed dependencies, CommonJS callers and completed route closure. The Node
 bootstrap checks the original bytes and required builtin state immediately before CommonJS
 evaluation, including after cache eviction. Changed sources, loader customization and unsupported
-compiler operations remain publication errors. This profile requires the default Node.js 24.22.1
-loader and does not make arbitrary dynamic compilation portable. These restrictions apply to native
+compiler operations remain publication errors. This profile requires one of the
+[reviewed default Node.js loaders](node26.md) and does not make arbitrary dynamic compilation portable. These restrictions apply to native
 Node artifacts; ordinary Worker output keeps its existing version support.
 
 For jsonwebtoken, the same guard observes the original `semver-noop` dependency evaluation and
@@ -142,7 +142,7 @@ The fixed Next.js WebSocket dependency has a separate absent-only profile for it
 fallbacks stay unchanged. Both optional targets must remain unresolved during proof, final
 archive validation and immediately before evaluation. A resolvable target, a changed source or
 a changed builtin descriptor is refused. This does not authorize arbitrary `eval`, unresolved
-loaders or uninspected native packages. The profile uses the same default Node.js 24.22.1 guard.
+loaders or uninspected native packages. The profile uses the same reviewed default Node.js guard.
 
 Hook TypeScript is analyzed after compiler lowering and can be bundled as JavaScript. A dependency
 executed from its original file must use syntax the target Node runtime can execute directly.

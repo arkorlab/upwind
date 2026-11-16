@@ -32,6 +32,9 @@ export default {
     if (coding === 'deflate') {
       return new Response(Uint8Array.from(deflateSync(bytes)), { headers, encodeBody: 'manual' });
     }
+    if (coding === 'gzip, identity') {
+      return new Response(Uint8Array.from(gzipSync(bytes)), { headers, encodeBody: 'manual' });
+    }
     if (coding === 'gzip, br') {
       return new Response(Uint8Array.from(brotliCompressSync(gzipSync(bytes))), {
         headers,

@@ -1,6 +1,7 @@
 import type { ProjectManifest, RouteEntry } from '../manifest/index.ts';
 import { anyConditionHolds } from './conditions.ts';
 import { isHtmlLimitedBotUserAgent } from './constants.ts';
+import { longestAffordable, patternCost } from './pattern-cost.ts';
 import {
   afterCharacterClass,
   afterGroup,
@@ -27,7 +28,7 @@ import {
  * on the application's own time, and answers the page either way. A browser's user agent, or a
  * crawler's, runs to a couple of hundred characters.
  */
-const MAX_TESTED_USER_AGENT_LENGTH = 512;
+export const MAX_TESTED_USER_AGENT_LENGTH = 512;
 
 /**
  * The longest pattern run here. Its alternatives without a repetition cost at most their own
@@ -62,7 +63,7 @@ const MAX_BACKTRACKING_REPETITIONS = 2;
  * with the square of the agent's length: four seconds at 50 KB, measured. Read without, it costs
  * a millisecond at 128 KB, and no agent is too long to be judged.
  */
-const NEXT_HTML_LIMITED_BOTS = String.raw`[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight`;
+export const NEXT_HTML_LIMITED_BOTS = String.raw`[\w-]+-Google|Google-[\w-]+|Chrome-Lighthouse|Slurp|DuckDuckBot|baiduspider|yandex|sogou|bitlybot|tumblr|vkShare|quora link preview|redditbot|ia_archiver|Bingbot|BingPreview|applebot|facebookexternalhit|facebookcatalog|Twitterbot|LinkedInBot|Slackbot|Discordbot|WhatsApp|SkypeUriPreview|Yeti|googleweblight`;
 
 type BlockingJudge = (userAgent: string) => boolean;
 
@@ -362,6 +363,38 @@ function compiled(pattern: string): RegExp | undefined {
 }
 
 /**
+ * The simplified form of `pattern` compiled for bounded User-Agent testing, or `undefined` when
+ * `pattern` does not compile or its simplified shape is not bounded by `runsBounded`.
+ */
+export function compiledBoundedHtmlLimitedBots(pattern: string): RegExp | undefined {
+  // A pattern Next.js could not compile is not run here either, simplified or not.
+  if (pattern.length > MAX_READ_PATTERN_LENGTH || compiled(pattern) === undefined) {
+    return undefined;
+  }
+  const simple = simplifiedPattern(pattern);
+  return runsBounded(simple) ? compiled(simple) : undefined;
+}
+
+/**
+ * Whether an application's `htmlLimitedBots` pattern runs within bounded cost across a
+ * `MAX_TESTED_USER_AGENT_LENGTH` User-Agent header: Next.js's built-in list, a pattern whose
+ * simplified shape satisfies `runsBounded`, or one whose polynomial cost budget reaches
+ * `MAX_TESTED_USER_AGENT_LENGTH`.
+ */
+export function runsBoundedHtmlLimitedBots(pattern: string): boolean {
+  if (pattern === NEXT_HTML_LIMITED_BOTS) {
+    return true;
+  }
+  if (compiled(pattern) === undefined) {
+    return false;
+  }
+  if (compiledBoundedHtmlLimitedBots(pattern) !== undefined) {
+    return true;
+  }
+  return longestAffordable(patternCost(pattern, 'i', false)) >= MAX_TESTED_USER_AGENT_LENGTH;
+}
+
+/**
  * The application's pattern as the edge judges it, or `undefined` for one it will not run: one
  * that does not compile, or whose simplified form (`simplifiedPattern`) is not of a shape it runs
  * (`runsBounded`). Next.js's own list is read as `isHtmlLimitedBotUserAgent` reads it. What is run
@@ -371,12 +404,7 @@ function judgeOf(pattern: string): BlockingJudge | undefined {
   if (pattern === NEXT_HTML_LIMITED_BOTS) {
     return isHtmlLimitedBotUserAgent;
   }
-  // A pattern Next.js could not compile is not run here either, simplified or not.
-  if (pattern.length > MAX_READ_PATTERN_LENGTH || compiled(pattern) === undefined) {
-    return undefined;
-  }
-  const simple = simplifiedPattern(pattern);
-  const regex = runsBounded(simple) ? compiled(simple) : undefined;
+  const regex = compiledBoundedHtmlLimitedBots(pattern);
   if (regex === undefined) {
     return undefined;
   }

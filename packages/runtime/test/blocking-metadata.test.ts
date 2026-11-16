@@ -1,3 +1,4 @@
+import { NEXT_HTML_LIMITED_BOTS } from '@stayingupwind/core/request';
 import { describe, expect, it } from 'vitest';
 
 import { wantsBlockingMetadata } from '../src/incoming.ts';
@@ -41,5 +42,31 @@ describe('a visitor Next.js sends blocking metadata to', () => {
   it('is never a request that names no agent, nor under a pattern that does not compile', () => {
     expect(wantsBlockingMetadata(asked(undefined), '.*')).toBe(false);
     expect(wantsBlockingMetadata(asked('MyBot'), '(')).toBe(false);
+  });
+
+  it('sends blocking metadata when a custom pattern sees a user-agent longer than 512 characters', () => {
+    const within = asked(`${'x'.repeat(500)}MyBot`);
+    const browserWithin = asked(`${'x'.repeat(490)}Chrome/129`);
+    const botPast = asked(`${'x'.repeat(512)}MyBot`);
+    const browserPast = asked(`${'x'.repeat(512)}Chrome/129`);
+    const defaultBotPast = asked(`${'x'.repeat(600)}Twitterbot/1.0`);
+    const defaultBrowserPast = asked(`${'x'.repeat(600)}Chrome/129`);
+
+    expect(wantsBlockingMetadata(within, 'MyBot')).toBe(true);
+    expect(wantsBlockingMetadata(browserWithin, 'MyBot')).toBe(false);
+    expect(wantsBlockingMetadata(botPast, 'MyBot')).toBe(true);
+    expect(wantsBlockingMetadata(browserPast, 'MyBot')).toBe(true);
+    expect(wantsBlockingMetadata(defaultBotPast, undefined)).toBe(true);
+    expect(wantsBlockingMetadata(defaultBrowserPast, NEXT_HTML_LIMITED_BOTS)).toBe(false);
+  });
+
+  it('bounds polynomial and catastrophic patterns passed directly to wantsBlockingMetadata', () => {
+    const longRun = asked('a'.repeat(200));
+    const shortMiss = asked('Browser');
+
+    expect(wantsBlockingMetadata(longRun, '^a+a+a+a+a+b$')).toBe(true);
+    expect(wantsBlockingMetadata(shortMiss, '^a+a+a+a+a+b$')).toBe(false);
+    expect(wantsBlockingMetadata(longRun, '(a+)+')).toBe(true);
+    expect(wantsBlockingMetadata(shortMiss, '(a+)+')).toBe(true);
   });
 });
