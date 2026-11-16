@@ -77,7 +77,7 @@ catalog:
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   # Keep the runner used to qualify the workerd suites; runner upgrades need full pool coverage.
-  vitest: 5.0.5
+  vitest: 5.1.0
   '@vitest/eslint-plugin': 1.6.28
   # What `@stayingupwind/host` writes the cache's control contract in, and turns core's schemas into
   # where something takes zod's alone (`./zod`). What the runtime and the edge read — the gateway's
