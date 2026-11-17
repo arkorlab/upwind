@@ -1,8 +1,10 @@
 import {
   BuildPatternBudget,
+  BuildPatternBudgetExceededError,
   type BuildPatternMatcher,
   type DeploymentBundle,
   edgeServedRewrites,
+  shippedFileHeadersOf,
   staticFileAssetPrefixOf,
 } from '@stayingupwind/core/bundle';
 import {
@@ -292,6 +294,141 @@ export function staticFilesOf(
   bundle: DeploymentBundle,
   previous: DeploymentBundle | undefined,
   patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  headerPatterns: BuildPatternMatcher = new BuildPatternBudget(),
+): Record<string, StaticFileEntry> {
+  return staticFilesWithHeadersOf(bundle, previous, patterns, headerPatterns).files;
+}
+
+/**
+ * What became of the headers the rules of `next.config` set on a deployment's files
+ * (`StaticFileEntry.headers`), for whoever deploys it to say: stored, on so many files — none, where
+ * the rules set nothing on any; not applicable, for a build whose rules the edge judges on each
+ * request; or left out, and why — the matching a build is allowed ran out (`patterns`), or the
+ * manifest would not fit with them (`size`). A deployment they were left out of is published all the
+ * same, and its files answer without the headers its application set on them, as every file of such
+ * a build did before the field: which is what this is for its deployer to know.
+ */
+export type FileHeadersOutcome =
+  | { readonly kind: 'not-applicable' }
+  | { readonly kind: 'stored'; readonly files: number }
+  | { readonly kind: 'left-out'; readonly reason: 'patterns' | 'size' };
+
+/** The files the manifest serves (`staticFilesOf`), and what became of their headers. */
+export function staticFilesWithHeadersOf(
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle | undefined,
+  patterns: BuildPatternMatcher = new BuildPatternBudget(),
+  headerPatterns: BuildPatternMatcher = new BuildPatternBudget(),
+): { readonly files: Record<string, StaticFileEntry>; readonly fileHeaders: FileHeadersOutcome } {
+  return withStoredHeaders(filesOf(bundle, previous, patterns), bundle, {
+    headerPatterns,
+    prefixedSpelling: assetPrefixSpelling(bundle, previous),
+  });
+}
+
+/** What `withStoredHeaders` judges with beside the files and their build. */
+interface HeaderJudgement {
+  readonly headerPatterns: BuildPatternMatcher;
+  /** The other spelling a file is found by under the asset prefix, where it has one. */
+  readonly prefixedSpelling: ((pathname: string) => string | undefined) | undefined;
+}
+
+/**
+ * The spelling the edge finds a file of the build's `_next` by under the application's asset
+ * prefix as well (`withoutAssetPrefix`, in `staticFileKey`): `/_next/static/x.js` asked for as
+ * `/assets/_next/static/x.js`, which is how the pages ask for every one of them. Its rules are
+ * judged on that path, as Next.js judges them on the path asked for before its rewrite of the
+ * prefix runs (`beforeFiles`). `undefined` for a build without such a prefix, and for one whose
+ * files are named by the paths asked for themselves (`staticFileRequestKeysOf`), where each
+ * spelling is an entry of its own, judged under its own name — and for a file the prefix spells
+ * already, which is asked for by its own name.
+ */
+function assetPrefixSpelling(
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle | undefined,
+): HeaderJudgement['prefixedSpelling'] {
+  const prefix = staticFileAssetPrefixOf(bundle);
+  if (prefix === undefined || staticFileRequestKeysOf(bundle, previous)) {
+    return undefined;
+  }
+  const own = `${prefix.basePath}/_next/`;
+  const under = `${prefix.assetPrefix}/_next/`;
+  return (pathname) => {
+    return pathname.startsWith(own) && !pathname.startsWith(under)
+      ? `${under}${pathname.slice(own.length)}`
+      : undefined;
+  };
+}
+
+/** A set for the prefixed spelling that the rules set nothing on, where its own name is set some. */
+const NONE: Readonly<Record<string, string>> = {};
+
+/**
+ * An entry with what is stored for each spelling it is asked for by: its own name's set, and the
+ * prefixed spelling's only where that is another (`assetPrefixHeaders`). Sets are one object for
+ * equal headers (`shippedFileHeadersOf`), so telling them apart is telling the objects apart.
+ */
+function withSets(
+  entry: StaticFileEntry,
+  headers: Readonly<Record<string, string>> | undefined,
+  prefixed: Readonly<Record<string, string>> | undefined,
+): StaticFileEntry {
+  if (headers === undefined && prefixed === undefined) {
+    return entry;
+  }
+  return {
+    ...entry,
+    ...(headers !== undefined && { headers }),
+    ...(prefixed !== headers && { assetPrefixHeaders: prefixed ?? NONE }),
+  };
+}
+
+/**
+ * Each file with what the unconditional rules of `next.config` set on it, where the edge does not
+ * judge the build's rules on each request (`shippedFileHeadersOf`): under the pathname it is asked
+ * for, which for a file kept from the deployment before, or one a rewrite names, is the path the
+ * rules are judged against by this deployment's router — the rules being this deployment's — and,
+ * for a file of the build's `_next`, under the asset prefix it is asked for by as well
+ * (`assetPrefixSpelling`).
+ *
+ * Every rule against every file is matched within an allowance of its own (`headerPatterns`), and
+ * past it no file stores any, as none did before the field: what the files lose is the improvement,
+ * where spending the manifest's own allowance on it would refuse a deployment that was published
+ * before it. That they lost it is said (`FileHeadersOutcome`).
+ */
+function withStoredHeaders(
+  files: Record<string, StaticFileEntry>,
+  bundle: DeploymentBundle,
+  judgement: HeaderJudgement,
+): { readonly files: Record<string, StaticFileEntry>; readonly fileHeaders: FileHeadersOutcome } {
+  const headersOf = shippedFileHeadersOf(bundle, judgement.headerPatterns);
+  if (headersOf === undefined) {
+    return { files, fileHeaders: { kind: 'not-applicable' } };
+  }
+  const stored: Record<string, StaticFileEntry> = {};
+  let storing = 0;
+  try {
+    for (const [pathname, entry] of Object.entries(files)) {
+      const headers = headersOf(pathname);
+      const alias = judgement.prefixedSpelling?.(pathname);
+      const file = withSets(entry, headers, alias === undefined ? headers : headersOf(alias));
+      stored[pathname] = file;
+      storing += file === entry ? 0 : 1;
+    }
+  } catch (error) {
+    if (error instanceof BuildPatternBudgetExceededError) {
+      return { files, fileHeaders: { kind: 'left-out', reason: 'patterns' } };
+    }
+    throw error;
+  }
+  return { files: stored, fileHeaders: { kind: 'stored', files: storing } };
+}
+
+/** The files the manifest serves (`staticFilesOf`), before what the rules set on them. */
+function filesOf(
+  bundle: DeploymentBundle,
+  previous: DeploymentBundle | undefined,
+  patterns: BuildPatternMatcher,
 ): Record<string, StaticFileEntry> {
   const prefix = staticFileAssetPrefixOf(bundle);
   const requestKeys = staticFileRequestKeysOf(bundle, previous);

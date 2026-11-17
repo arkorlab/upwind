@@ -7,7 +7,7 @@ import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import type { EdgeContext, StaticFileContext } from '../strategies/context.ts';
-import { withJudgedRules } from './configured-headers.ts';
+import { withJudgedRules, withStoredFileHeaders } from './configured-headers.ts';
 import { headersAfterMiddleware } from './hosted-route.ts';
 import {
   decideMiddleware,
@@ -40,6 +40,12 @@ export interface HostedGateInput<Context extends StaticFileContext = EdgeContext
     middleware?: MiddlewareOutcome & Partial<MiddlewareTiming>,
     waited?: PassthroughWait,
   ) => Promise<Response>;
+  /**
+   * What the entry of the shipped file asked for stores of the rules of `next.config`
+   * (`StaticFileEntry.headers`), laid over the ones judged on the request (`withStoredFileHeaders`).
+   * Absent for anything else the edge holds, and for a file whose entry stores none.
+   */
+  readonly fileHeaders?: Readonly<Record<string, string>> | undefined;
 }
 
 /** A shipped file whose policy has not had to be waited on yet. */
@@ -126,8 +132,14 @@ export async function serveAfterMiddleware(
     return input.passthrough('reserved');
   }
   // Ahead of the middleware, and of whatever serving the file costs — a read of storage, a source
-  // fetched and transformed — with the middleware or without it.
-  const configured = headerRulesAsRouted(edge, manifest, url, request.headers);
+  // fetched and transformed — with the middleware or without it. What a shipped file's entry stores
+  // goes with them to whatever answers: Next.js's router collects the rules before the middleware
+  // runs, on the path asked for, and lays them on the file, on a file a rewrite lands on, and on an
+  // answer the middleware gives itself alike.
+  const configured = withStoredFileHeaders(
+    headerRulesAsRouted(edge, manifest, url, request.headers),
+    input.fileHeaders,
+  );
   let matches: boolean;
   try {
     matches = !edge.validated && middlewareMatches(edge, manifest, url, request.headers);

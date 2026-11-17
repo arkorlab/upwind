@@ -10,7 +10,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
 import type { StaticFileContext } from '../strategies/context.ts';
-import { withJudgedRules } from './configured-headers.ts';
+import { storedAsAsked, withJudgedRules } from './configured-headers.ts';
 import {
   claimedAsLeft,
   type DeferredHostedGateInput,
@@ -207,7 +207,13 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
         : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
     );
   }
-  return serveAfterMiddleware(input, {
+  // What the file's entry stores for the spelling asked goes over the rules judged on the request
+  // (`withStoredFileHeaders`): the file asked for is the one whose path the router judged its rules
+  // on, wherever a middleware rewrite then lands. An entry that stores none leaves the input as it
+  // came.
+  const headers = storedAsAsked(input.file, manifest.staticFileAssetPrefix, url.pathname);
+  const gated = headers === undefined ? input : { ...input, fileHeaders: headers };
+  return serveAfterMiddleware(gated, {
     ready: (edge) => {
       servedInput = { ...input, edge };
     },

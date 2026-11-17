@@ -409,3 +409,82 @@ describe('the memory held by version-three Pages authority', () => {
     expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(7 * 80);
   });
 });
+
+/** A file listed with `headers` stored on it, or none. */
+function storedFile(seed: string, headers?: Readonly<Record<string, string>>) {
+  return {
+    sha256: seed.repeat(64),
+    byteLength: 1,
+    contentType: 'text/plain',
+    immutable: false,
+    ...(headers !== undefined && { headers }),
+  };
+}
+
+/**
+ * Four files, each storing what `headersOf` gives it — nothing, where it is not given — and the
+ * manifest saying they store some where they do, as one built from them says (`staticFileHeaders`).
+ */
+function listing(headersOf?: (seed: string) => Readonly<Record<string, string>>): ProjectManifest {
+  const seeds = ['a', 'b', 'c', 'd'];
+  return {
+    ...manifestOf([]),
+    staticFiles: Object.fromEntries(
+      seeds.map((seed) => [`/${seed}.txt`, storedFile(seed, headersOf?.(seed))]),
+    ),
+    ...(headersOf !== undefined && { staticFileHeaders: true as const }),
+  };
+}
+
+const POLICY_SET = { 'x-content-type-options': 'nosniff' };
+
+/**
+ * The headers a build with `i18n` stores on its files (`StaticFileEntry.headers`): an object beside
+ * the entry for each set, charged once however many files the stored manifest's reading hands it.
+ */
+describe('the header sets stored on files', () => {
+  it('charges each set once for the files that share it, and nothing where none is stored', () => {
+    const plain = manifestCharge(listing(), JSON_BYTES);
+    const read = parseProjectManifest(serializeManifest(listing(() => POLICY_SET)));
+    const other = { 'x-frame-options': 'DENY' };
+    const two = listing((seed) => (seed === 'd' ? other : POLICY_SET));
+
+    expect(read.staticFiles?.['/a.txt']?.headers).toBe(read.staticFiles?.['/b.txt']?.headers);
+    expect(manifestCharge(read, JSON_BYTES) - plain).toBe(ENTRY_BYTES);
+    expect(manifestCharge(two, JSON_BYTES) - plain).toBe(2 * ENTRY_BYTES);
+  });
+
+  /** One assembled and not yet stored holds a copy on each file, and is charged for each. */
+  it('charges every copy a manifest not read from storage holds', () => {
+    const plain = manifestCharge(listing(), JSON_BYTES);
+    const copies = listing(() => ({ ...POLICY_SET }));
+
+    expect(manifestCharge(copies, JSON_BYTES) - plain).toBe(4 * ENTRY_BYTES);
+  });
+
+  /** A set a file's prefixed spelling is given apart (`assetPrefixHeaders`) is one object more. */
+  it('charges the set a prefixed spelling is given apart once as well', () => {
+    const plain = manifestCharge(listing(), JSON_BYTES);
+    const base = listing(() => POLICY_SET);
+    const prefixedSet = { 'x-prefixed': 'yes' };
+    const files = Object.entries(base.staticFiles ?? {}).map(([pathname, file]) => {
+      const prefixedFile = { ...file, assetPrefixHeaders: prefixedSet };
+      return [pathname, prefixedFile] as const;
+    });
+    const withPrefixed = { ...base, staticFiles: Object.fromEntries(files) };
+
+    expect(manifestCharge(withPrefixed, JSON_BYTES) - plain).toBe(2 * ENTRY_BYTES);
+  });
+
+  /**
+   * Asked of the manifest alone: one that does not say its files store any has none of them looked
+   * at, which a set on a file of it, which no build leaves there, shows by going uncharged.
+   */
+  it('looks at no file of a manifest that does not say they store any', () => {
+    const plain = manifestCharge(listing(), JSON_BYTES);
+    const unsaid = { ...listing(() => POLICY_SET) };
+    delete unsaid.staticFileHeaders;
+
+    expect(manifestCharge(unsaid, JSON_BYTES) - plain).toBe(0);
+  });
+});

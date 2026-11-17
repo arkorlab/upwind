@@ -40,7 +40,7 @@ import {
 } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
-import { fromStoredManifest, readManifestJson, toStoredManifest } from './stored.ts';
+import { fromStoredManifest, headersFlag, readManifestJson, toStoredManifest } from './stored.ts';
 
 const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -140,12 +140,14 @@ function staticFileFields(
   input: BuildProjectManifestInput,
 ): Pick<
   ProjectManifest,
+  | 'staticFileHeaders'
   | 'staticFileLocales'
   | 'staticFileAssetPrefix'
   | 'staticFileRequestKeys'
   | 'staticFileTrailingSlash'
 > {
   return {
+    ...headersFlag(input.staticFiles),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,

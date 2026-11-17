@@ -399,6 +399,30 @@ export const staticFileEntrySchema = staticFileBytesSchema
      * for the name by their deployment, and get the bytes that deployment gave it.
      */
     previous: staticFileBytesSchema.extend({ deploymentId: z.string().min(1) }).optional(),
+    /**
+     * What the rules of `next.config` with no condition set on the file, for a build whose rules
+     * the edge does not judge on each request (one with `i18n`): judged against the path Next.js's
+     * router matches when the manifest was written (`shippedFileHeadersOf`), each name lowercased,
+     * and laid on the file's answer as a rule the edge judges itself is — over its own lifetime and
+     * its type, never over what describes its bytes on the wire (`SHIPPED_FILE_ENTITY_HEADERS`).
+     * Absent where the rules set nothing, and for every file of a build whose rules the edge judges
+     * itself; present on any file only beside `staticFileHeaders`.
+     *
+     * A reader that does not know the field drops it, and serves the file without them, as every
+     * file of such a build was served before the field existed — which is why it is no schema
+     * version (see `MANIFEST_SCHEMA_VERSION`). Stored by its place in the manifest's `tables`, as a
+     * route's headers are (`stored.ts`).
+     */
+    headers: z.record(z.string(), z.string()).optional(),
+    /**
+     * The same, for the file asked for under the application's asset prefix
+     * (`staticFileAssetPrefix`), which is how its pages ask for every file of its `_next`: the
+     * rules are judged on the path asked for, and one written for `/assets/_next/static/:path*` or
+     * for `/_next/static/:path*` sets its headers on that spelling alone. Present only where the
+     * two spellings are set different headers — an empty record where the prefixed one is set none
+     * — and absent where they agree, which a rule over every path leaves them doing.
+     */
+    assetPrefixHeaders: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((entry, ctx) => {
     // On the manifest's own build, `dplOnly` would name no deployment to answer, and a reader that
@@ -676,6 +700,18 @@ const projectFields = {
    * before it was published, whose reader leaves that spelling to the Function.
    */
   staticFileTrailingSlash: z.literal(true).optional(),
+  /**
+   * Some file stores the headers the rules set on it (`StaticFileEntry.headers`, and
+   * `assetPrefixHeaders`), and a stored manifest names them by their place in its `tables`: what a
+   * reader asks before it looks at any
+   * file, so that a manifest whose files store none — every one but a build with `i18n`'s, and every
+   * one from before the field — costs its reading and its charge nothing more than it did
+   * (`fromStoredManifest`, `manifestCharge`). Written from the files by whatever builds the manifest
+   * (`buildProjectManifest`).
+   *
+   * A reader that does not know the field drops it, as it drops the files' headers it stands for.
+   */
+  staticFileHeaders: z.literal(true).optional(),
   /**
    * What Next.js's router reads of a request's path as it is written, before it decodes anything:
    * the base path, and in an application with `i18n`, the locale behind it — every one of its

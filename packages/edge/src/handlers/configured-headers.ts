@@ -1,4 +1,9 @@
-import type { ConfiguredHeaders, ProjectManifest } from '@stayingupwind/core/manifest';
+import type {
+  ConfiguredHeaders,
+  ProjectManifest,
+  StaticFileAssetPrefix,
+  StaticFileEntry,
+} from '@stayingupwind/core/manifest';
 import { HEADER_RULES_AFTER_HEADER } from '@stayingupwind/core/paas';
 import {
   HOP_BY_HOP_HEADERS,
@@ -13,6 +18,8 @@ import { nominatedBy, statusAllowsLength } from './responses.ts';
 const SET_COOKIE_HEADER = 'set-cookie';
 const CONNECTION_HEADER = 'connection';
 const CONTENT_LENGTH_HEADER = 'content-length';
+/** What follows the asset prefix in the path a file of the build's `_next` is asked for by. */
+const NEXT_DIR = '/_next/';
 
 /** A later routing phase owns these fields; absent on runtimes from before it says so. */
 export function laterHeaderRules(answer: Response): Set<string> | undefined {
@@ -36,6 +43,61 @@ export function laterHeaderRules(answer: Response): Set<string> | undefined {
   if (nominated === undefined) return later;
   for (const name of nominated) later.add(name);
   return later;
+}
+
+/**
+ * The rules judged on a request for a shipped file (`headerRulesAsRouted`), with what its entry
+ * stores laid over them (`StaticFileEntry.headers`): every unconditional rule of a build whose rules
+ * the edge does not judge on each request, in Next.js's order, judged against the file's path when
+ * the manifest was written — the rules `next build` writes itself among them, which are all that
+ * build publishes for the edge to judge, so what is stored of them is the later word on any header
+ * both name. Its headers are the request's whoever asks, so whether the request chose any of the
+ * answer (`conditioned`) is the judged rules' to say, and so is what the rules ahead of the
+ * middleware set (`aheadOfMiddleware`), which only a build whose every rule the edge judges hands
+ * on (`withJudgedRules`).
+ *
+ * Laid on whatever answers just as the judged rules are, so what a stored header may not replace is
+ * what a judged one may not: on the file, what describes its bytes (`SHIPPED_FILE_ENTITY_HEADERS`,
+ * in `static-file.ts`, which the manifest leaves off as well), and on an answer the middleware gives
+ * itself, what that answer's own lays keep.
+ *
+ * A read of a field of the entry the request was classified by, and a copy of a few names: nothing
+ * is matched for it here, nothing is read, and nothing is waited on. An entry that stores none —
+ * every file of a build whose rules the edge judges, and of a manifest from before the field — is
+ * answered with what was judged, as it was.
+ */
+export function withStoredFileHeaders(
+  configured: ConfiguredHeaders,
+  stored: Readonly<Record<string, string>> | undefined,
+): ConfiguredHeaders {
+  return stored === undefined
+    ? configured
+    : { ...configured, headers: { ...configured.headers, ...stored } };
+}
+
+/**
+ * What a shipped file's entry stores for the spelling it was asked for by: the set judged on the
+ * prefixed path (`assetPrefixHeaders`) for a request under the application's asset prefix's
+ * `_next`, where the entry stores one, and its own name's (`headers`) for any other. Only an entry
+ * of the build's `_next`, under its base path, stores the prefixed set, and the prefix is not that
+ * base path (`assetPrefixRewrite`), so a request under the prefix's `_next` found such an entry by
+ * taking the prefix off (`withoutAssetPrefix`, in `staticFileKey`) and by nothing else: telling the
+ * two apart is reading whether the path begins with the prefix, for an entry that has a second set
+ * at all — and nothing for one that has none, which is every entry but those.
+ */
+export function storedAsAsked(
+  file: Pick<StaticFileEntry, 'assetPrefixHeaders' | 'headers'>,
+  prefix: StaticFileAssetPrefix | undefined,
+  pathname: string,
+): Readonly<Record<string, string>> | undefined {
+  const { assetPrefixHeaders } = file;
+  if (assetPrefixHeaders === undefined || prefix === undefined) {
+    return file.headers;
+  }
+  const { assetPrefix } = prefix;
+  const prefixed =
+    pathname.startsWith(assetPrefix) && pathname.startsWith(NEXT_DIR, assetPrefix.length);
+  return prefixed ? assetPrefixHeaders : file.headers;
 }
 
 /** Coding, framing and entity tags describe the optimizer's bytes; it does not offer ranges. */

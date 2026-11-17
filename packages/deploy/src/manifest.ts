@@ -55,7 +55,11 @@ import {
   routePrerendersOf,
   routeSegmentsOf,
 } from './routes.ts';
-import { staticFileRequestKeysOf, staticFilesOf } from './static-files.ts';
+import {
+  type FileHeadersOutcome,
+  staticFileRequestKeysOf,
+  staticFilesWithHeadersOf,
+} from './static-files.ts';
 import { pagesFallbacksOf, staticPagesOf } from './static-pages.ts';
 
 /**
@@ -137,6 +141,67 @@ export function fitBuildTags(manifest: ProjectManifest): {
   };
 }
 
+/** A manifest as it is published, and whether its files' headers were left out to fit it. */
+interface FittedManifest {
+  readonly manifest: ProjectManifest;
+  readonly serialized: string;
+  readonly leftOut: boolean;
+}
+
+/**
+ * What the files of the manifest published come to, and what became of their headers: the ones the
+ * build stored, unless fitting the manifest left them out (`fitFileHeaders`), which is said too.
+ */
+function filesAsPublished(
+  fitted: FittedManifest,
+  staticFiles: Readonly<Record<string, StaticFileEntry>>,
+  fileHeaders: FileHeadersOutcome,
+): Pick<Extract<AssembledManifest, { readonly kind: 'assembled' }>, 'fileHeaders' | 'staticFiles'> {
+  return fitted.leftOut
+    ? {
+        staticFiles: fitted.manifest.staticFiles ?? {},
+        fileHeaders: { kind: 'left-out', reason: 'size' },
+      }
+    : { staticFiles, fileHeaders };
+}
+
+/** The manifest with no file storing headers, nor saying any does (`staticFileHeaders`). */
+function withoutFileHeaders(manifest: ProjectManifest): ProjectManifest {
+  const staticFiles: Record<string, StaticFileEntry> = {};
+  const files = Object.entries(manifest.staticFiles ?? {});
+  for (const [pathname, file] of files) {
+    if (file.headers === undefined && file.assetPrefixHeaders === undefined) {
+      staticFiles[pathname] = file;
+      continue;
+    }
+    const plain = { ...file };
+    delete plain.headers;
+    delete plain.assetPrefixHeaders;
+    staticFiles[pathname] = plain;
+  }
+  const unsaid = { ...manifest, staticFiles };
+  delete unsaid.staticFileHeaders;
+  return unsaid;
+}
+
+/**
+ * The manifest as it is published (`fitBuildTags`), with the headers its files store where they fit:
+ * what those take — their sets once each, and a place on every file that names one — is an
+ * improvement the edge serves without, as it served every file of such a build before them, so it
+ * is never what refuses a deployment. One they would take past either budget is published as it
+ * would have been without them, build tags and all, and says so (`leftOut`).
+ */
+export function fitFileHeaders(built: ProjectManifest): FittedManifest {
+  if (built.staticFileHeaders !== true) {
+    return { ...fitBuildTags(built), leftOut: false };
+  }
+  const bounded = boundedBuildTags(built);
+  const serialized = serializeManifest(bounded);
+  return oversizedManifest(bounded, serialized) === undefined
+    ? { manifest: bounded, serialized, leftOut: false }
+    : { ...fitBuildTags(withoutFileHeaders(built)), leftOut: true };
+}
+
 /**
  * The pages a deployment's manifest routes, asked of the build as its servability is
  * (`ServableOptions`): every page the edge serves where the deployment has a runtime cache, and
@@ -197,6 +262,12 @@ export type AssembledManifest =
       readonly staticFiles: Readonly<Record<string, StaticFileEntry>>;
       /** The rules the manifest publishes for the edge to route by (`dynamicRouting`). */
       readonly routing: ReturnType<typeof dynamicRouting>;
+      /**
+       * Whether the files store the headers the rules set on them (`FileHeadersOutcome`) — and,
+       * where they were left out, why: what the deployer is told, the deployment published all the
+       * same.
+       */
+      readonly fileHeaders: FileHeadersOutcome;
     }
   /**
    * Not to publish — too large (`oversizedManifest`), fingerprinted as another bundle, naming
@@ -385,7 +456,11 @@ async function assembleWithin(
   const foldedHeaderRules = foldedHeaderRulesOf(bundle)?.map((rule) =>
     documentHeaderRule(rule, context.recoverySource),
   );
-  const staticFiles = staticFilesOf(bundle, input.previous, patterns);
+  const { files: staticFiles, fileHeaders } = staticFilesWithHeadersOf(
+    bundle,
+    input.previous,
+    patterns,
+  );
   const staticFileLocales = staticFileLocalesOf(bundle);
   const staticFileAssetPrefix = staticFileAssetPrefixOf(bundle);
   // What the router reads of a path as written, which no page or file is found by decoding.
@@ -430,7 +505,8 @@ async function assembleWithin(
     ...gatesOf(bundle),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),
   });
-  const { manifest, serialized } = fitBuildTags(built);
+  const fitted = fitFileHeaders(built);
+  const { manifest, serialized } = fitted;
   const refused = oversizedManifest(manifest, serialized);
   if (refused !== undefined) {
     return { kind: 'refused', reason: refused };
@@ -441,7 +517,7 @@ async function assembleWithin(
     manifestId: await computeManifestId(manifest),
     serialized,
     routes: routes.map((route) => manifest.routes[route.pathname] ?? route),
-    staticFiles,
     routing,
+    ...filesAsPublished(fitted, staticFiles, fileHeaders),
   };
 }

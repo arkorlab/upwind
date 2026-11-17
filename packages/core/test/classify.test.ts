@@ -573,6 +573,35 @@ describe('classifyRequest', () => {
     );
   });
 
+  /**
+   * What the rules of `next.config` set on a name (`StaticFileEntry.headers`) is the name's: the
+   * bytes the deployment before gave it answer under it too, as they do under the rules the edge
+   * judges itself on each request.
+   */
+  it("answers the deployment before's build of a name under the headers stored on the name", () => {
+    const headers = { 'x-content-type-options': 'nosniff' };
+    const assetPrefixHeaders = { 'x-prefixed': 'yes' };
+    const buildManifest = {
+      sha256: 'd'.repeat(64),
+      byteLength: 5,
+      contentType: 'text/javascript',
+      immutable: false,
+      headers,
+      assetPrefixHeaders,
+      previous: {
+        sha256: 'e'.repeat(64),
+        byteLength: 4,
+        contentType: 'text/javascript',
+        deploymentId: 'dpl_previous',
+      },
+    };
+    const files = { '/_next/static/build/_buildManifest.js': buildManifest };
+
+    expect(
+      staticFileOf(files, '/_next/static/build/_buildManifest.js?dpl=dpl_previous'),
+    ).toStrictEqual({ ...buildManifest.previous, immutable: false, headers, assetPrefixHeaders });
+  });
+
   it('passes through when no manifest is active', () => {
     const result = classifyRequest({
       method: 'GET',

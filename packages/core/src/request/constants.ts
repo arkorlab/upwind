@@ -94,6 +94,24 @@ export const NAVIGATION_REQUEST_HEADERS = {
  */
 export const PREFETCH_HINT_HEADERS: readonly string[] = ['sec-purpose', 'purpose', 'x-moz'];
 
+const CONTENT_LENGTH_HEADER = 'content-length';
+
+/**
+ * What describes a shipped file's bytes on the wire, which no rule of `next.config` says otherwise
+ * about, whether the edge judges the rule on the request or the manifest stores what it sets on the
+ * file (`StaticFileEntry.headers`): the length, the coding, the range sent, the entity and whether
+ * ranges of it are offered — every one the edge's own account of the bytes it sends from storage.
+ * Not the type: a rule may set that, as Next.js's file server lets one (`send` sets a type only
+ * where none is set), which is how an extensionless `public/` file is given one.
+ */
+export const SHIPPED_FILE_ENTITY_HEADERS: ReadonlySet<string> = new Set([
+  'accept-ranges',
+  'content-encoding',
+  'content-range',
+  CONTENT_LENGTH_HEADER,
+  'etag',
+]);
+
 /** Request headers that must never be forwarded from clients to the origin. */
 export const HOP_BY_HOP_HEADERS: readonly string[] = [
   'connection',
@@ -233,7 +251,7 @@ export const STORED_RESPONSE_HEADER_DENYLIST: readonly string[] = [
   'date',
   'expires',
   'pragma',
-  'content-length',
+  CONTENT_LENGTH_HEADER,
   'content-encoding',
   ...HOP_BY_HOP_HEADERS,
   'x-next-cache-tags',
@@ -293,7 +311,7 @@ export const SHARED_CACHE_CONTROL_HEADERS: readonly string[] = [
  */
 export const PASSTHROUGH_RESPONSE_HEADER_DENYLIST: readonly string[] = [
   ...HOP_BY_HOP_HEADERS,
-  'content-length',
+  CONTENT_LENGTH_HEADER,
   ...SHARED_CACHE_CONTROL_HEADERS,
   'x-next-cache-tags',
   'x-middleware-set-cookie',

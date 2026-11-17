@@ -1,4 +1,3 @@
-import { interpolateHeader } from '../manifest/dynamic.ts';
 import type { DynamicRoute, HeaderRule, ReservedRoute } from '../manifest/schema.ts';
 import { mayHoldForDocument } from '../request/conditions.ts';
 import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../request/constants.ts';
@@ -11,6 +10,7 @@ import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
 import { type BuildPatternMatcher, nativeBuildPatterns } from './pattern-matcher.ts';
 import { queryDependent } from './query.ts';
+import { headerPhases, headersSetAt, isConditional, phasedHeaderRoutes } from './rule-headers.ts';
 import type { DeploymentBundle, Entrypoint, Prerender, Route } from './schema.ts';
 import { edgeServedRewrites } from './served-rewrites.ts';
 import { terminalShellsOf } from './shared-shell.ts';
@@ -133,10 +133,6 @@ function reachableTemplates(bundle: ServingBundle): ReadonlySet<string> {
       template === undefined ? [] : [template],
     ),
   );
-}
-
-function isConditional(rule: Route): boolean {
-  return rule.has !== undefined || rule.missing !== undefined;
 }
 
 /**
@@ -354,28 +350,17 @@ function applicableHeaders(
   for (const [name, value] of recorded) {
     headers.set(name.toLowerCase(), headerValue(value));
   }
+  const matching = { references: bundle.routerReferences, patterns };
+  const pathname = requestedPathname(bundle, prerender.pathname);
   for (const rule of headerPhases(bundle)) {
     const applies = mayHoldForDocument(rule) && (conditional === 'fold' || !isConditional(rule));
-    if (!applies || rule.headers === undefined) {
+    // The matcher a shipped file's stored headers are judged with as well (`shippedFileHeadersOf`).
+    const set = applies ? headersSetAt(rule, pathname, matching) : undefined;
+    if (set === undefined) {
       continue;
     }
-    // Compiled by Next.js for its own router, which runs them without the unicode flag, and
-    // without regard to case: a rule for `/Shop/:slug` sets its headers on `/shop/x` too.
-    const match = patterns.exec(
-      rule.sourceRegex,
-      'i',
-      requestedPathname(bundle, prerender.pathname),
-    );
-    if (match === null) {
-      continue;
-    }
-    // With the `:name` references filled in from what the path matched, as the router fills them:
-    // a rule written `value: ':slug'` means the value, not the six characters.
-    for (const [name, value] of Object.entries(rule.headers)) {
-      headers.set(
-        interpolateHeader(name, match, bundle.routerReferences).toLowerCase(),
-        interpolateHeader(value, match, bundle.routerReferences),
-      );
+    for (const [name, value] of set) {
+      headers.set(name, value);
     }
   }
   return headers;
@@ -742,20 +727,7 @@ function headerValue(value: string | readonly string[]): string {
   return typeof value === 'string' ? value : value.join(', ');
 }
 
-/** The routing phases whose header rules apply to a document, in the order Next.js applies them. */
-export function headerPhases(bundle: ServingBundle): Route[] {
-  return phasedHeaderRoutes(bundle).map(({ route }) => route);
-}
-
-/** The phases `headerPhases` reads, each named as the manifest records a rule's (`HeaderRule.phase`). */
-const HEADER_PHASES = ['beforeMiddleware', 'afterFiles', 'onMatch'] as const;
-
-/** `headerPhases`, each rule with the phase it came from. */
-function phasedHeaderRoutes(
-  bundle: ServingBundle,
-): { readonly route: Route; readonly phase: NonNullable<HeaderRule['phase']> }[] {
-  return HEADER_PHASES.flatMap((phase) => bundle.routing[phase].map((route) => ({ route, phase })));
-}
+export { headerPhases } from './rule-headers.ts';
 
 /**
  * The response headers the page answers with whatever the request: what the build recorded, and

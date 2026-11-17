@@ -411,8 +411,16 @@ function staticFileBuild(
   }
   if (file.previous?.deploymentId === dplId) {
     // A name kept with the build before beside it is not a content hash (`previous`), so neither
-    // are its bytes, whatever the entry says of its own build.
-    return { ...file.previous, immutable: false };
+    // are its bytes, whatever the entry says of its own build. What the rules set on the name is the
+    // name's, whichever build's bytes answer it, as the rules the edge judges itself are.
+    return {
+      ...file.previous,
+      immutable: false,
+      ...(file.headers !== undefined && { headers: file.headers }),
+      ...(file.assetPrefixHeaders !== undefined && {
+        assetPrefixHeaders: file.assetPrefixHeaders,
+      }),
+    };
   }
   return undefined;
 }
