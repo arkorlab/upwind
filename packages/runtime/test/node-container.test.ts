@@ -1,6 +1,10 @@
+import type { ServerResponse } from 'node:http';
+import { gzipSync } from 'node:zlib';
+
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { startNodeContainer, type NodeContainerServer } from '../src/node-container.ts';
+import { invokeNodeHandler } from '../src/node-http-bridge.ts';
 
 const TOKEN = 'synthetic-node-control-token-with-32-bytes';
 const CONFIGURATION = JSON.stringify({
@@ -21,6 +25,28 @@ function internal(
   return fetch(`http://127.0.0.1:${server.port}${path}`, {
     ...init,
     headers,
+  });
+}
+
+/** A container whose application is one Node.js handler, reached through the loopback bridge. */
+function nodeHandlerContainer(
+  handler: (output: ServerResponse) => void,
+): Promise<NodeContainerServer> {
+  return startNodeContainer({
+    port: 0,
+    entry: {
+      fetch: (request, _env, context) => {
+        return invokeNodeHandler({
+          request,
+          requestMeta: {},
+          waitUntil: context.waitUntil,
+          handler: (_request, output) => {
+            handler(output);
+            return Promise.resolve();
+          },
+        });
+      },
+    },
   });
 }
 
@@ -243,6 +269,73 @@ describe('node container HTTP service', () => {
     } finally {
       releaseBody.resolve(undefined);
       releaseTask.resolve(undefined);
+      await server.close();
+    }
+  });
+
+  it('sends a Node.js handler’s own gzip coding and the length Node counted with its bytes', async () => {
+    const plain = 'a route that compresses its own answer';
+    const encoded = gzipSync(plain);
+    const server = await nodeHandlerContainer((output) => {
+      output.setHeader('content-encoding', 'gzip');
+      output.end(encoded);
+    });
+    try {
+      const response = await internal(server, '/compressed', {
+        headers: { 'x-upwind-request-url': 'https://example.test/compressed' },
+      });
+
+      expect({
+        encoding: response.headers.get('content-encoding'),
+        length: response.headers.get('content-length'),
+        // Fetch decodes it once: the bytes went out as the handler compressed them.
+        body: await response.text(),
+      }).toStrictEqual({ encoding: 'gzip', length: String(encoded.byteLength), body: plain });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('keeps a Node.js handler’s gzip coding and bytes where it named a length of its own', async () => {
+    const plain = 'a route that names its own encoded length';
+    const encoded = gzipSync(plain);
+    const server = await nodeHandlerContainer((output) => {
+      output.setHeader('content-encoding', 'gzip');
+      output.setHeader('content-length', String(encoded.byteLength));
+      output.end(encoded);
+    });
+    try {
+      const response = await internal(server, '/named', {
+        headers: { 'x-upwind-request-url': 'https://example.test/named' },
+      });
+
+      // The loopback bridge frames the body by what is written, not by the length the handler
+      // named (`ownFraming`), so it leaves chunked; its coding and bytes are the handler's.
+      expect({
+        encoding: response.headers.get('content-encoding'),
+        body: await response.text(),
+      }).toStrictEqual({ encoding: 'gzip', body: plain });
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('sends a Node.js handler’s download with the length Node counted', async () => {
+    const file = Buffer.alloc(64 * 1024, 65);
+    const server = await nodeHandlerContainer((output) => {
+      output.setHeader('content-type', 'application/pdf');
+      output.end(file);
+    });
+    try {
+      const response = await internal(server, '/file.pdf', {
+        headers: { 'x-upwind-request-url': 'https://example.test/file.pdf' },
+      });
+
+      expect({
+        length: response.headers.get('content-length'),
+        bytes: (await response.arrayBuffer()).byteLength,
+      }).toStrictEqual({ length: String(file.byteLength), bytes: file.byteLength });
+    } finally {
       await server.close();
     }
   });
