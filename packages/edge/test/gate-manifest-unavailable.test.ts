@@ -97,9 +97,40 @@ const CASES = [
     gates: 1,
     dispatches: 0,
   },
+  // Every method of a gated route is its gate's to admit, and only the manifest says which routes
+  // are gated: a gated deployment's other methods wait for it, and fail closed without it.
   {
-    name: 'a gated POST dispatches before a stalled manifest',
+    name: 'a gated POST fails closed on a stalled manifest',
     gated: true,
+    method: 'POST',
+    backend: 'stalled',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'a gated POST fails closed on missing metadata',
+    gated: true,
+    method: 'POST',
+    backend: 'missing',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+  },
+  {
+    name: 'a present manifest still asks the gate before the application of a POST',
+    gated: true,
+    method: 'POST',
+    backend: 'found',
+    status: 403,
+    gates: 1,
+    dispatches: 0,
+  },
+  // A deployment that declares no gate waits for nothing it did not wait for before.
+  {
+    name: 'an ungated POST dispatches before a stalled manifest',
+    gated: false,
+    independent: true,
     method: 'POST',
     backend: 'stalled',
     status: 200,
@@ -191,9 +222,10 @@ function prepareClock(row: Case): void {
   if (row.backend === 'stalled') vi.useFakeTimers();
 }
 
+/** A request that waits for no manifest is answered with no time passing for its read. */
 async function advanceBackendClock(row: Case): Promise<void> {
   if (row.backend !== 'stalled') return;
-  const elapsed = row.method === 'POST' ? 0 : READ_MS + HEDGE_MS + 1;
+  const elapsed = 'independent' in row ? 0 : READ_MS + HEDGE_MS + 1;
   await vi.advanceTimersByTimeAsync(elapsed);
 }
 

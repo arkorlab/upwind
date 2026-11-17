@@ -207,8 +207,9 @@ function gatedRouteOf(manifest: ProjectManifest, url: URL, headers: Headers): st
 }
 
 /**
- * The gate a request is asked of first (above), or `undefined` for none. Asked only of a `GET` or a
- * `HEAD`: a request of any other method is the application's Function's, and no gate's.
+ * The gate a request is asked of first (above), or `undefined` for none — whatever the request's
+ * method: the application's Function renders a gated route for a `POST` as for a `GET`, so a host
+ * asks the gate before it hands on a request of any method.
  */
 export function gateFor(
   manifest: ProjectManifest,

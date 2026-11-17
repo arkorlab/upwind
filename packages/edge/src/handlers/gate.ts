@@ -25,6 +25,7 @@ import {
   GATE_CAPTURE_HEADER,
   GATE_DEPLOYMENT_HEADER,
   GATE_HEADER_PREFIX,
+  GATE_METHOD_HEADER,
   GATE_PASS,
   GATE_ROUTE_HEADER,
   GATE_SCOPE_DOCUMENTS,
@@ -53,6 +54,7 @@ import {
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
 import { decodeNonceDocument, type DecodeNonceDocumentInput } from './gate-body-encoding.ts';
+import { askedByProbe, probeOf } from './gate-probe.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
   carriesApplicationCredentials,
@@ -83,12 +85,21 @@ import {
  * under a reason of its own, is a shell that is none, or that answers what no shell can
  * (`shellOf`).
  *
- * Asked of `GET` and `HEAD` alone: any other method goes to the application's Function, a Server
- * Action's among them, as it does with no gate. Nor of a request whose validation the edge accepted,
- * which proves what the deployment stores and not what a gate makes of a visitor. Nothing takes a
- * request on to a gated route after its gate is asked: a rewrite of `next.config` may reach none,
- * which the bundle is refused for where one could (`rewritesOnto`), and a build with a middleware,
- * whose rewrites no build can know, declares no gate at all (`gateIssues`).
+ * Asked of every method. A `GET` or a `HEAD` is asked as itself. Any other — a Server Action's
+ * `POST`, a form's, a `PUT`, a `DELETE` — goes to the application's Function, which renders the
+ * route for it as for a read, only once its gate passes a probe of it (`gate-probe.ts`): a `GET` of
+ * its URL with none of its body, told the method it stands for (`GATE_METHOD_HEADER`). The visitor's
+ * request is then handed on as it came, its body never read for the gate. So is an `OPTIONS`, a CORS
+ * preflight's among them: the Function answers one of the route as the application does, and no
+ * method reaches the route with no gate asked. A probe takes no shell and asks no capture, which are
+ * a navigation's and a `GET`'s: a shell its gate answers it with is unserved, and a capture asked
+ * beside a pass is the pass alone. Nor does a gate that said it decides documents alone
+ * (`GATE_SCOPE_DOCUMENTS`) let one go on unasked (`goesOnUnasked`). No gate is asked of a request
+ * whose validation the edge accepted, whatever its method: a validation proves what the deployment
+ * stores, not what a gate makes of a visitor. Nothing takes a request on to a gated route after its
+ * gate is asked: a rewrite of `next.config` may reach none, which the bundle is refused for where
+ * one could (`rewritesOnto`), and a build with a middleware, whose rewrites no build can know,
+ * declares no gate at all (`gateIssues`).
  */
 
 /** How long the edge waits on a route's gate before it answers that the gate is unavailable. */
@@ -243,7 +254,9 @@ function stripGateHeaders(headers: Headers): void {
  * The visitor's request as the deployment's Function would be handed it (`buildPassthroughRequest`):
  * on the host the visitor asked, its headers forwarded, the host's credentials taken off. Told the
  * route, and the deployment it is of where the manifest names one, by the edge alone: whatever the
- * visitor sent under the protocol's names is taken off first.
+ * visitor sent under the protocol's names is taken off first. Of a method but `GET` and `HEAD`, a
+ * probe of it in its place (`probeOf`), told the method it stands for (`GATE_METHOD_HEADER`) — after
+ * that, so no visitor's word for one is.
  *
  * Of a project that handed nonces over, a request for a document goes without the visitor's
  * validators (`VALIDATOR_HEADERS`): its gate answers it whole, for the edge to give it a nonce of
@@ -252,13 +265,16 @@ function stripGateHeaders(headers: Headers): void {
  * keep a page stamped with another response's nonce under this one's policy.
  */
 function gateRequest(input: GateInput, gate: RouteGate, signal: AbortSignal): Request {
-  const client = new Request(input.request, {
-    headers: stripEdgeHeaders(input.request.headers),
-    signal,
-  });
+  const probed = askedByProbe(input.request);
+  const client = probed
+    ? probeOf(input.request, signal)
+    : new Request(input.request, { headers: stripEdgeHeaders(input.request.headers), signal });
   const asked = buildPassthroughRequest(client, input.forwarding, input.host.credentials);
   stripGateHeaders(asked.headers);
   asked.headers.set(GATE_ROUTE_HEADER, gate.route);
+  if (probed) {
+    asked.headers.set(GATE_METHOD_HEADER, input.request.method);
+  }
   const shell = takesShell(input.request);
   if (shell) {
     asked.headers.set(GATE_ACCEPT_HEADER, GATE_SHELL);
@@ -452,7 +468,8 @@ async function gateAnswer(
 
 /**
  * The capture a gate that says to go on asks for beside it (`GATE_CAPTURE_HEADER`), of a `GET`: a
- * `HEAD` renders nothing to capture, and goes on as though its gate had said only to go on.
+ * `HEAD` renders nothing to capture, and goes on as though its gate had said only to go on — as does
+ * a request of any other method, whose gate was asked about a probe of it, and not about a render.
  */
 function captureOf(input: GateInput, gate: RouteGate, answer: Response): GateCapture | undefined {
   return input.request.method === 'GET' && answer.headers.get(GATE_CAPTURE_HEADER) === GATE_CAPTURE
@@ -702,10 +719,12 @@ function asksCapture(input: GateInput): boolean {
  * or a client's GET that says nothing of itself — nor a credentialed capture probe of its own
  * (`asksCapture`), which only its gate lets through as one. It goes on unasked, as the gate's pass
  * would have it: routed as with no gate, and kept from shared caches as a pass's answer is
- * (`unshared`), without the round trip to the gate.
+ * (`unshared`), without the round trip to the gate. A request of a method but `GET` and `HEAD` never
+ * does: what a gate said of the reads it decides is no word on another method, which the Function
+ * answers of the route as well (`askedByProbe`).
  */
 function goesOnUnasked(input: GateInput, gate: RouteGate): boolean {
-  if (takesShell(input.request) || asksCapture(input)) {
+  if (askedByProbe(input.request) || takesShell(input.request) || asksCapture(input)) {
     return false;
   }
   const key = documentGateOf(input, gate);
@@ -716,8 +735,9 @@ function goesOnUnasked(input: GateInput, gate: RouteGate): boolean {
  * The request routed as it would be with no gate (`routed`), where it is of no gated route, or
  * where its gate says to go on — told what the gate directs in its place, where it directs anything
  * (`GateDirective`); otherwise the gate's answer, or the edge's that the gate is unavailable
- * (above). Asked only of a `GET` or a `HEAD` of a deployment that declares a gate, and not of a
- * request a gate said it decides nothing of (`goesOnUnasked`).
+ * (above). Asked of a request of any method of a deployment that declares a gate — of a method but
+ * `GET` and `HEAD` with a probe of it (`gateRequest`) — and not of a read a gate said it decides
+ * nothing of (`goesOnUnasked`).
  */
 export function routeThroughGate(
   input: GateInput,

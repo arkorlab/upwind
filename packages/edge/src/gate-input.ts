@@ -26,14 +26,12 @@ export type TerminalObserver = (
   extra: Partial<EdgeMetric>,
 ) => void;
 
-/** One request keeps its gate's dispatch even where later routing falls back on a pattern budget. */
+/**
+ * One request keeps its gate's dispatch even where later routing falls back on a pattern budget —
+ * of any method, since every method of a gated route is its gate's to admit (`routeThroughGate`).
+ */
 export function countedGateInput(input: ManifestRoutingInput): GateObservedRoutingInput {
-  if (
-    input.state.manifest?.gates === undefined ||
-    input.state.validated ||
-    (input.request.method !== 'GET' && input.request.method !== 'HEAD')
-  )
-    return input;
+  if (input.state.manifest?.gates === undefined || input.state.validated) return input;
   const observed = gateObservation(input.host);
   return { ...input, host: observed.host, gatePassed: observed.passed };
 }

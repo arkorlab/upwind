@@ -46,10 +46,11 @@ export interface EdgeGates {
   /**
    * The answer of the gate bound under `name` to `request` — the visitor's, as the deployment's
    * Function would be handed it, the host's credentials taken off, and told `route`
-   * (`GATE_ROUTE_HEADER`). One that says to go on (`GATE_ANSWER_HEADER`) is let go, and the request
-   * served as though there were no gate; any other is the visitor's answer. A gate that is not
-   * bound, or that cannot answer, is a rejection: the edge then answers that the gate is
-   * unavailable, and nothing else.
+   * (`GATE_ROUTE_HEADER`); of a method but `GET` and `HEAD`, a bodiless `GET` probe of it, told the
+   * method (`GATE_METHOD_HEADER`, `gate-probe.ts`). One that says to go on (`GATE_ANSWER_HEADER`)
+   * is let go, and the request served as though there were no gate; any other is the visitor's
+   * answer. A gate that is not bound, or that cannot answer, is a rejection: the edge then answers
+   * that the gate is unavailable, and nothing else.
    */
   answer(name: string, request: Request, route: string): Promise<Response>;
 }
