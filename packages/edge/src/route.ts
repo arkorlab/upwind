@@ -36,7 +36,6 @@ import {
   type MiddlewareOutcome,
   type MiddlewareTiming,
 } from './handlers/middleware.ts';
-import { observeTerminal } from './handlers/observer.ts';
 import {
   finishObserved,
   type ObservePassthrough,
@@ -49,12 +48,11 @@ import {
   PATTERN_BUDGET,
   passthroughReason,
 } from './handlers/passthrough.ts';
-import { safeDiagnosticField, serviceUnavailableResponse } from './handlers/responses.ts';
+import { safeDiagnosticField } from './handlers/responses.ts';
 import { routeHostedBody } from './handlers/route-body.ts';
 import { headersToClassify } from './handlers/routing-headers.ts';
 import { routeHostedStaticPage } from './handlers/static-page.ts';
 import { hostedFirst } from './hosted-first.ts';
-import type { EdgeMetric } from './observability/metrics.ts';
 import { withPatternBudget } from './pattern-budget.ts';
 import {
   type DeferredRoutingInput,
@@ -69,6 +67,7 @@ import { coloOf, forwardingFor, type IncomingRequest } from './request-context.t
 import { lookAtScopeOf } from './scope-look.ts';
 import type { EdgeContext, RequestTimings, StaticFileContext } from './strategies/context.ts';
 import { edgeStrategyRegistry } from './strategies/registry.ts';
+import { answeredUnavailable, terminalObserver } from './terminal-outcome.ts';
 
 export { type PointerReads, type PointerRequest, startReads } from './preview/pointer-request.ts';
 
@@ -87,6 +86,11 @@ const FUNCTION_PROBE = 'function-probe';
 const NOT_DEPLOYED = 'not-deployed';
 /** Why a capture its gate asked for went to the route's Function (`GateCapture`). */
 const GATE_CAPTURE = 'gate-capture';
+/**
+ * Why a request of a deployment its pointer says is gated was answered 503: no gate can be found
+ * for it, since the manifest that names the gates was not read, or names none.
+ */
+const GATE_UNAVAILABLE = 'gate-unavailable';
 
 /** A request routed by the edge, with what it knows of the project and what it waited on for it. */
 export interface RoutingInput {
@@ -350,13 +354,47 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
   // sending it there would arrive straight back here and go round again. The same whichever
   // hostname it came in on.
   if (notDeployed(state)) {
-    observeTerminalFor(input, url.pathname, NOT_DEPLOYED);
-    return Promise.resolve(serviceUnavailableResponse(NOT_DEPLOYED));
+    return answeredUnavailable(input, NOT_DEPLOYED);
   }
-  // The core classifier decides which non-read requests are Actions and which are other methods;
-  // neither can use a manifest's files or pages. A single Function may reach here before its
-  // manifest, and a split deployment has already read its tables to choose the right Function.
   if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return routeOtherMethod(input, forwarding);
+  }
+  // A request of a route the build declared a gate for is the gate's to answer first, before any
+  // other decision of the edge's (`handlers/gate.ts`). A deployment that declares none is asked
+  // this, and nothing more.
+  const { manifest } = state;
+  if (manifest?.gates === undefined && state.requiresGate === true && !state.validated) {
+    return answeredUnavailable(input, GATE_UNAVAILABLE);
+  }
+  if (manifest?.gates === undefined) {
+    return routeWithManifest(input, forwarding);
+  }
+  const observe = terminalObserver(input);
+  return routeThroughGate(gateInputOf(input, manifest, forwarding, observe), (directive) => {
+    return directive === undefined
+      ? routeGatedManifest(input, forwarding)
+      : routeAsDirected(input, manifest, forwarding, directive);
+  });
+}
+
+/**
+ * A request of a method but `GET` and `HEAD`, handed to the application's Function as the core
+ * classifier names it — a Server Action, or another method — since neither can use a manifest's files
+ * or pages. A single Function may reach here before its manifest, and a split deployment has already
+ * read its tables to choose the right Function. Of a deployment whose pointer says it declares a
+ * gate, the pointer had the request wait for its manifest (`servePointerRequest`), and a request of a
+ * gated route is handed on only once its gate passes a probe of it (`routeThroughGate`): the Function
+ * renders the route for it as for a read. Its gate directs nothing else of it — no capture, no shell
+ * (`captureOf`, `shellOf`) — so a pass is the one word acted on, and its answer kept inside the gate's
+ * response boundary as a read's is (`insideGate`). A deployment that declares none is asked whether it
+ * does, and nothing more.
+ */
+function routeOtherMethod(
+  input: GateObservedRoutingInput,
+  forwarding: ForwardingContext,
+): Promise<Response> {
+  const { request, url, state } = input;
+  const handOn = (): Promise<Response> => {
     const classification = classifyRequest({
       method: request.method,
       url,
@@ -364,27 +402,18 @@ function routeWithinBudget(input: GateObservedRoutingInput): Promise<Response> {
       manifest: undefined,
       deployment: undefined,
     });
-    return passthrough(passthroughReason(classification));
-  }
-  // A request of a route the build declared a gate for is the gate's to answer first, before any
-  // other decision of the edge's (`handlers/gate.ts`). A deployment that declares none is asked
-  // this, and nothing more.
-  const { manifest } = state;
-  if (manifest?.gates === undefined && state.requiresGate === true && !state.validated) {
-    observeTerminalFor(input, url.pathname, 'gate-unavailable');
-    return Promise.resolve(serviceUnavailableResponse('gate-unavailable'));
-  }
-  if (manifest?.gates === undefined) {
-    return routeWithManifest(input, forwarding);
-  }
-  const observe = (pathname: string, outcome: string, extra: Partial<EdgeMetric>): void => {
-    observeTerminalFor(input, pathname, outcome, extra);
+    return passthroughFor(input, passthroughReason(classification));
   };
-  return routeThroughGate(gateInputOf(input, manifest, forwarding, observe), (directive) => {
-    return directive === undefined
-      ? routeGatedManifest(input, forwarding)
-      : routeAsDirected(input, manifest, forwarding, directive);
-  });
+  const { manifest } = state;
+  if (manifest?.gates === undefined) {
+    return state.requiresGate === true && !state.validated
+      ? answeredUnavailable(input, GATE_UNAVAILABLE)
+      : handOn();
+  }
+  const observe = terminalObserver(input);
+  return routeThroughGate(gateInputOf(input, manifest, forwarding, observe), () =>
+    insideGate(input, handOn),
+  );
 }
 
 /**
@@ -478,27 +507,6 @@ async function insideGate(
     }
     throw error;
   }
-}
-
-/** The same request context accompanies every terminal routing outcome. */
-function observeTerminalFor(
-  input: ManifestRoutingInput,
-  pathname: string,
-  outcomeKind: string,
-  extra?: Partial<EdgeMetric>,
-): void {
-  const { request, state } = input;
-  observeTerminal(input.host, {
-    projectId: state.projectId,
-    pathname,
-    outcomeKind,
-    colo: coloOf(request) ?? '',
-    manifestId: state.manifestId,
-    policyId: state.policy.id,
-    pointerLookupMs: input.timings.pointerMs,
-    manifestLookupMs: input.timings.manifestMs,
-    ...extra,
-  });
 }
 
 /** Read the policy only once the request is known to need an edge strategy. */

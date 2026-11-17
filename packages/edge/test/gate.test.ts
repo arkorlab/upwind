@@ -884,9 +884,13 @@ describe('a route whose gate cannot say', () => {
   });
 });
 
-describe('a request no gate is asked about', () => {
-  /** A Server Action, and every other method, is the Function's, as it is with no gate. */
-  it('hands a POST of a gated route to the Function', async () => {
+describe('a request of another method of a gated route', () => {
+  /**
+   * A Server Action, and every other method, is its gate's to admit first, as a read is: the gate is
+   * asked with a probe of the request (`gate-methods.test.ts`), and what it refuses never reaches the
+   * Function.
+   */
+  it('asks its gate about a POST, a Server Action’s, and answers it with what the gate answers', async () => {
     const { gates, asked } = gatesAnswering(() => new Response('revoked', { status: 403 }));
     const posted = navigation('/posts/abc', {
       method: 'POST',
@@ -894,11 +898,37 @@ describe('a request no gate is asked about', () => {
       headers: { 'next-action': 'abc123' },
     });
 
-    const { body, functionAsked } = await routed(posted, GATED, hostWith(gates));
+    const { response, body, functionAsked } = await routed(posted, GATED, hostWith(gates));
+
+    expect(asked.map(({ name, route, method }) => ({ name, route, method }))).toStrictEqual([
+      { name: GATE, route: POST, method: 'GET' },
+    ]);
+    expect(response.status).toBe(403);
+    expect(body).toBe('revoked');
+    expect(functionAsked).toStrictEqual([]);
+  });
+});
+
+describe('a request no gate is asked about', () => {
+  /** A Server Action of a route with no gate is the Function's, as it is with no gate at all. */
+  it('hands a POST of a route with no gate of a deployment that declares one to the Function', async () => {
+    const { gates, asked } = gatesAnswering(() => new Response('revoked', { status: 403 }));
+    const site = {
+      ...GATED,
+      pathname: '/',
+      dynamicRoutes: [{ sourceRegex: POST_PATTERN, gated: POST }],
+    };
+    const posted = navigation('/', {
+      method: 'POST',
+      body: 'form',
+      headers: { 'next-action': 'abc123' },
+    });
+
+    const { body, functionAsked } = await routed(posted, site, hostWith(gates));
 
     expect(asked).toStrictEqual([]);
     expect(body).toBe('from the Function');
-    expect(functionAsked).toStrictEqual(['/posts/abc']);
+    expect(functionAsked).toStrictEqual(['/']);
   });
 
   /** A route the build declared no gate for is served as it always was. */

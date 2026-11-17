@@ -118,11 +118,16 @@ export function gateBinding(name: string): `GATE__${string}` {
  * workerd's does, and refuses any other). A gate that decides nothing else of its route says so
  * beside a pass (`GATE_SCOPE_HEADER` set to `GATE_SCOPE_DOCUMENTS`), and its host may let the route's
  * other requests go on unasked, but one that says it is to be captured (`GATE_CAPTURE_HEADER` set
- * to `GATE_CAPTURE`, on the request). Every name begins `GATE_HEADER_PREFIX`, which no visitor's
+ * to `GATE_CAPTURE`, on the request). A request of any method but `GET` and `HEAD` is asked about
+ * with a probe of it rather than as itself: a `GET` of its URL with none of its body, its headers
+ * that describe one or a stored copy (`content-*`, `transfer-encoding`, the validators, a range)
+ * taken off, and the method it stands for said beside it (`GATE_METHOD_HEADER`) — which a `GET` or
+ * `HEAD` asked as itself never carries. Every name begins `GATE_HEADER_PREFIX`, which no visitor's
  * request carries on to a gate: what a gate is told of a request, its host tells it.
  */
 export const GATE_HEADER_PREFIX = 'x-upwind-gate';
 export const GATE_ROUTE_HEADER = 'x-upwind-gate-route';
+export const GATE_METHOD_HEADER = 'x-upwind-gate-method';
 export const GATE_DEPLOYMENT_HEADER = 'x-upwind-gate-deployment';
 export const GATE_ANSWER_HEADER = 'x-upwind-gate';
 export const GATE_PASS = 'pass';

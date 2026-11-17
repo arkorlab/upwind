@@ -961,17 +961,18 @@ captured from the query, a header or a cookie, or one a pattern of the applicati
 (`:id(\d+)`), may hold `/` and `..`, and so reaches every route. A redirect, or a rewrite to another
 origin (`http://` or `https://`), reaches none of the routes.
 
-The host binds a gate under each name, and its edge asks the route's gate about every `GET` and
-`HEAD` of the route — a document, a router's request for its payload, a prefetch, a Pages Router
-page's props — before it serves the request anything. An answer that says `x-upwind-gate: pass` has
+The host binds a gate under each name, and its edge asks the route's gate about every request of
+the route, whatever its method, before it serves the request anything or hands it to the Function.
+A `GET` or `HEAD` — a document, a router's request for its payload, a prefetch, a Pages Router
+page's props — is asked as itself, any other by a probe. An answer that says `x-upwind-gate: pass` has
 the request served as though there were no gate, with its answer kept from shared caches even
 where the application permits public caching: the gate admitted this visitor alone. The browser's
 own cache directives remain. That restriction also applies when a routing pattern exceeds its
 allowance after admission and the Function answers the fallback. Any other is the answer, kept nowhere. A gate that
 cannot be reached is a `503`, never what was kept of the route. A publisher also carries
-`hasGates: true` on the deployment's pointer. If its routing manifest cannot be read, every `GET`
-and `HEAD` is answered `503`: without the routing table the edge cannot prove that the request is
-of an ungated route. The marker is retained whenever the same deployment's pointer is rebuilt;
+`hasGates: true` on the deployment's pointer. If its routing manifest cannot be read, every request,
+whatever its method, is answered `503`: without the routing table the edge cannot prove that the
+request is of an ungated route. The marker is retained whenever the same deployment's pointer is rebuilt;
 an ungated or legacy pointer omits it and keeps its existing fallback behavior. A gated pointer uses
 version 2 together with `hasGates: true`; an ungated pointer keeps version 1 and its existing bytes.
 A reader that knows only version 1 rejects the entire gated pointer before routing or Function
@@ -980,12 +981,49 @@ it. Hosts composing their own pointer schema preserve this pairing; those select
 members also require a gate-capable pointer version when any reachable member is gated. During a
 mixed rollout an old reader serves none of the newly gated deployment, so deploy gate-capable
 readers first to preserve availability. A legacy `requiresGate`-only version 1 pointer retains that
-independent admission marker without acquiring `hasGates` or version 2. A request of any other method goes
-to the Function, as it does without a gate. Nor is a gated route an image the optimizer may take:
+independent admission marker without acquiring `hasGates` or version 2. Nor is a gated route an
+image the optimizer may take:
 `/_next/image` answers a source of one `400`, as it answers a source that is no image, before
 anything is fetched or kept — what it optimizes is kept for every visitor, and a gated route's
 every answer is its gate's. An image of a gated route is marked `unoptimized`, so that the browser
 asks for it at its route, of its gate.
+
+Every other method is asked about as well — a Server Action's `POST`, a form's, a `PUT`, a
+`DELETE`, an `OPTIONS` — since the Function answers a request of a gated route whatever its method,
+and an App Router page renders for a `POST` as it does for a `GET`. The gate is handed a probe in
+the request's place: a `GET` of the same URL, on the visitor's other headers, with
+`x-upwind-gate-method` naming the method it stands for, and with nothing of the request's body —
+no `content-*` header, no `transfer-encoding`, `trailer`, `expect`, `digest` or `repr-digest` —
+and no validator or range (`if-match`, `if-none-match`, `if-modified-since`, `if-unmodified-since`,
+`if-range`, `range`). A `GET` or `HEAD` asked as itself never carries `x-upwind-gate-method`, and
+whatever a visitor sends under that name is taken off. The body is never read, copied or held for
+the gate: where the gate passes the probe, the visitor's request goes to the Function as it came,
+body intact, its answer kept from shared caches as an admitted read's is. Any other answer — a
+refusal, a redirect to sign in — is the visitor's, as it is for a read, and a gate that cannot be
+reached is a `503`. A gate with no reason to tell the two apart answers a probe as it answers a
+`GET` of the route, which admits no one a read would not. A probe takes no shell and asks no
+capture: a shell answered to one is a `503`, and a capture asked beside a pass is the pass alone. A
+gate that said it decides documents alone (`x-upwind-gate-scope: documents`) is asked about such a
+request all the same, every time.
+
+`OPTIONS` is no exception, a CORS preflight included. The Function answers an `OPTIONS` of the route
+as the application does — a route handler's own, or the page — so leaving it unasked would leave a
+method that reaches the route past its gate, and nothing the edge can read tells a browser's
+preflight from one a client made up. A preflight never carries the visitor's cookies or other
+credentials (the Fetch standard sends it without them), so a gate that admits by session refuses
+one, and the cross-origin request it was for is then never sent. A gate that is to admit such
+requests passes a probe whose `x-upwind-gate-method` is `OPTIONS` and that carries
+`access-control-request-method`, judging it by its `origin`. A same-origin request is never
+preflighted.
+
+Only a deployment that declares a gate pays for any of this. A request of another method of a
+single Function is handed on before its manifest is read, unless the pointer says the deployment is
+gated — `hasGates: true`, or the legacy `requiresGate: true` — when it waits for the manifest, which
+says whether its route is gated, and a gated route's waits for its gate as well. A deployment
+without gates waits for nothing it did not wait for before. A pointer published before
+`requiresGate` existed carries neither marker, so the edge cannot tell its gated deployment from one
+without gates until the manifest is read, and hands its other methods on unasked: publish such a
+pointer again.
 
 Accepted validation requests keep this restriction: bypassing a route's admission gate to prove a
 candidate does not make that route a source for the image optimizer. Validate such an image at its own

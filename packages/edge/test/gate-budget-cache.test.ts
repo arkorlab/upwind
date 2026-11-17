@@ -64,7 +64,18 @@ const SCENARIOS: readonly Scenario[] = [
     // A navigation checks the missing build shell before asking the application.
     subrequests: 2,
   },
-  { name: 'POST', method: 'POST', gateCalls: 0, cache: PUBLIC, budget: false },
+  // Asked of its gate as a read is, by a probe that carries none of its body, and kept from shared
+  // caches as an admitted read's answer is; its classification reads no manifest, so no budget.
+  { name: 'admitted POST', method: 'POST', budget: false },
+  {
+    name: 'refused POST',
+    method: 'POST',
+    denied: true,
+    status: 403,
+    appCalls: 0,
+    budget: false,
+    cache: 'private, no-store',
+  },
   {
     name: 'terminal gate',
     denied: true,

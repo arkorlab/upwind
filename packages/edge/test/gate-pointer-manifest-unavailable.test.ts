@@ -106,10 +106,58 @@ const CASES = [
     dispatches: 1,
     terminal: 0,
   },
+  // Every method of a gated route is its gate's to admit, and only the manifest says which routes
+  // are gated: either marker has another method wait for it, and fail closed without it.
   {
-    name: 'a hasGates-only POST stays independent of a stalled manifest',
+    name: 'a hasGates-only POST fails closed on stalled metadata',
     marker: 'hasGates',
     gated: true,
+    method: 'POST',
+    backend: 'stalled',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+    terminal: 1,
+  },
+  {
+    name: 'a hasGates-only DELETE fails closed on failed metadata',
+    marker: 'hasGates',
+    gated: true,
+    method: 'DELETE',
+    backend: 'failed',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+    terminal: 1,
+  },
+  {
+    name: 'a legacy requiresGate-only POST keeps its unavailable guard',
+    marker: 'requiresGate',
+    gated: true,
+    method: 'POST',
+    backend: 'stalled',
+    status: 503,
+    gates: 0,
+    dispatches: 0,
+    terminal: 0,
+  },
+  {
+    name: 'a hasGates-only POST still asks its gate after durable fallback',
+    marker: 'hasGates',
+    gated: true,
+    method: 'POST',
+    backend: 'durable',
+    status: 403,
+    gates: 1,
+    dispatches: 0,
+    terminal: 0,
+  },
+  // An unmarked pointer waits for nothing it did not wait for before.
+  {
+    name: 'an unmarked ungated POST stays independent of a stalled manifest',
+    marker: 'none',
+    gated: false,
+    independent: true,
     method: 'POST',
     backend: 'stalled',
     status: 200,
@@ -237,9 +285,10 @@ function prepareClock(row: Case): void {
   if (row.backend === 'stalled') vi.useFakeTimers();
 }
 
+/** A request that waits for no manifest is answered with no time passing for its read. */
 async function advanceBackendClock(row: Case): Promise<void> {
   if (row.backend !== 'stalled') return;
-  const elapsed = row.method === 'POST' ? 0 : READ_MS + HEDGE_MS + 1;
+  const elapsed = 'independent' in row ? 0 : READ_MS + HEDGE_MS + 1;
   await vi.advanceTimersByTimeAsync(elapsed);
 }
 

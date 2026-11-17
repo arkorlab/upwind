@@ -92,12 +92,17 @@ export async function servePointerRequest(
   ctx.waitUntil(answeredPolicy);
   // A non-read request cannot be answered from a shipped file, image or page. One Worker needs
   // no routing tables to receive it, and runs the application's middleware itself. Keep the read
-  // for its response's cache invalidations without putting it before dispatch or the first byte.
+  // for its response's cache invalidations without putting it before dispatch or the first byte —
+  // unless the pointer says the deployment declares a gate, by either marker: a request of a gated
+  // route is its gate's to admit whatever its method (`routeOtherMethod`), and only the manifest says
+  // which routes are. A deployment that declares none waits for nothing more than it did.
   const independent =
     request.method !== 'GET' &&
     request.method !== 'HEAD' &&
     pointer.app !== undefined &&
-    pointer.app.functions === undefined;
+    pointer.app.functions === undefined &&
+    pointer.hasGates !== true &&
+    pointer.requiresGate !== true;
   const manifestReady = independent
     ? (async () => {
         const stored = await manifestLookup;
@@ -121,13 +126,10 @@ export async function servePointerRequest(
     // The pointer selected this name. A shipped file uses none of the policy's settings.
     policy: { id: pointer.policyId },
   };
-  // With no routing manifest a read may be of any gated route. The publisher's pointer keeps
-  // that admission requirement independently of the manifest; a failed read must not erase it.
-  if (
-    pointer.hasGates === true &&
-    state.manifest === undefined &&
-    (request.method === 'GET' || request.method === 'HEAD')
-  ) {
+  // With no routing manifest a request of any method may be of any gated route. The publisher's
+  // pointer keeps that admission requirement independently of the manifest; a failed read must not
+  // erase it.
+  if (pointer.hasGates === true && state.manifest === undefined) {
     const reason = 'gate-manifest-unavailable';
     observeTerminal(host, {
       projectId: pointer.projectId,
