@@ -13,6 +13,7 @@ import type { BuildFunctionInput } from './function.ts';
 import { nativeLoaderSelectorKeys } from './native-loaders.ts';
 import type { NativeLoad } from './native-loads.ts';
 import type { NodeArtifactFiles } from './node-artifact-files.ts';
+import { NODE_EDGE_ANSWER_SOURCE, NODE_EDGE_ANSWER_WRAPPER } from './node-edge-answer.ts';
 import type {
   NodeInitializationGuardRecord,
   NodeNextRequireHookArchive,
@@ -297,6 +298,9 @@ export async function addNodeEdge(files: NodeArtifactFiles, work: string): Promi
     workDir: work,
     entries: files.input.edgeEntries,
     instrumentation: files.input.edgeInstrumentation,
+    // The server sends a Web answer's headers as they are (`sendWebResponse`), so an Edge answer
+    // loses the framing a decoded `fetch` keeps before it gets there, as in Next.js's sandbox.
+    wrapper: { source: NODE_EDGE_ANSWER_SOURCE, name: NODE_EDGE_ANSWER_WRAPPER },
   });
   if (edge.trace.externals.some((name) => name.startsWith(CLOUDFLARE_IMPORT_PREFIX)))
     throw new AuditError(

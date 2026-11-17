@@ -59,7 +59,20 @@ export function messageRequest(
   return new Request(url, init);
 }
 
-/** Flush headers immediately, preserve separate cookies, and let Node's pipeline apply backpressure. */
+/**
+ * Flush headers immediately, preserve separate cookies, and let Node's pipeline apply backpressure.
+ *
+ * Every other header goes out as the answer carries it, `content-length` and `content-encoding`
+ * included, so whatever made the answer is what keeps them true of its bytes. A Node.js handler's
+ * answer is the one the loopback bridge read with `node:http`, which never decodes and frames the
+ * body by what the handler wrote (`ownFraming`): its coding is the handler's own, and a route that
+ * compresses its body keeps it, as `next start` writes such a route's bytes untouched. An Edge
+ * entrypoint's answer is a Web `Response` the application handed back, and one that hands a `fetch`
+ * on unchanged carries decoded bytes under the encoded length and the coding they arrived with
+ * (GHSA-pc58-hwjq-p385): the entry module the adapter writes for this server takes `content-length`,
+ * `content-encoding` and `transfer-encoding` off each such answer (`node-edge-answer.ts`), as
+ * Next.js's sandbox does for every Edge function's result.
+ */
 export async function sendWebResponse(response: Response, output: ServerResponse): Promise<void> {
   output.statusCode = response.status;
   for (const [name, value] of response.headers) {

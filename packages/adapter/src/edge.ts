@@ -115,13 +115,18 @@ function inlineAssetsSource(entries: readonly EdgeEntry[], paths: BuildPaths): s
  * in `route-module.ts`) and named `localhost` without it, so a Server Action that redirected
  * fetched the page it redirects to from there and failed
  * (`server-actions-redirect-middleware-rewrite`, "in edge runtime").
+ *
+ * A Function that sends an answer otherwise than workerd does may have each handler handed through
+ * a wrapper of its own as it is loaded (`EdgeEntryOptions.wrapper`); one that names none gets the
+ * handler as the registry holds it.
  */
 export function edgeEntrySource(
   entries: readonly EdgeEntry[],
   projectDir: string,
   distDir: string,
-  instrumentation?: EdgeInstrumentation,
+  options: EdgeEntryOptions = {},
 ): string {
+  const { instrumentation } = options;
   const table = entries.map((entry) => {
     const env = jsLiteral(entry.env);
     return [
@@ -144,13 +149,7 @@ export function edgeEntrySource(
     '    experimental.trustHostHeader = true;',
     '  }',
     '}',
-    'function registered(key, handlerExport) {',
-    '  const entry = globalThis._ENTRIES?.[key];',
-    '  if (entry === undefined) {',
-    "    throw new Error('@stayingupwind/adapter: ' + key + ' registered no edge entry');",
-    '  }',
-    '  return { handler: entry[handlerExport] };',
-    '}',
+    ...registeredSource(options.wrapper),
     'module.exports = {',
     '  entries: {',
     ...table,
@@ -158,6 +157,32 @@ export function edgeEntrySource(
     '};',
     '',
   ].join('\n');
+}
+
+/** What the generated entry module is written with besides its entries. */
+export interface EdgeEntryOptions {
+  readonly instrumentation?: EdgeInstrumentation | undefined;
+  /**
+   * Source defining a function that takes an entrypoint's handler and gives back the one to call,
+   * and that function's name: every handler the module hands over is handed through it.
+   */
+  readonly wrapper?: { readonly source: string; readonly name: string } | undefined;
+}
+
+/** The lookup each thunk ends with: the registered handler, through the wrapper where there is one. */
+function registeredSource(wrapper: EdgeEntryOptions['wrapper']): string[] {
+  const registry = 'entry[handlerExport]';
+  const handler = wrapper === undefined ? registry : `${wrapper.name}(${registry})`;
+  return [
+    ...(wrapper === undefined ? [] : [wrapper.source]),
+    'function registered(key, handlerExport) {',
+    '  const entry = globalThis._ENTRIES?.[key];',
+    '  if (entry === undefined) {',
+    "    throw new Error('@stayingupwind/adapter: ' + key + ' registered no edge entry');",
+    '  }',
+    `  return { handler: ${handler} };`,
+    '}',
+  ];
 }
 
 /** The first Edge entry loads the composed hook; every other entry shares that exact module. */
@@ -256,6 +281,8 @@ export interface BundleEdgeInput {
   readonly workDir: string;
   readonly entries: readonly EdgeEntry[];
   readonly instrumentation?: EdgeInstrumentation | undefined;
+  /** Each entrypoint's handler is handed through it as it is loaded (`EdgeEntryOptions.wrapper`). */
+  readonly wrapper?: EdgeEntryOptions['wrapper'];
   /** Compose the maps the build already wrote through into this bundle's own. */
   readonly sourceMaps?: boolean | undefined;
   /** Where to find a chunk's map that a hook took away (`kept-maps.ts`). */
@@ -300,7 +327,10 @@ export async function bundleEdge(
   const outFile = path.join(input.workDir, `${input.kind}-${EDGE_MODULE}`);
   await writeFile(
     entryFile,
-    edgeEntrySource(input.entries, input.projectDir, input.distDir, input.instrumentation),
+    edgeEntrySource(input.entries, input.projectDir, input.distDir, {
+      instrumentation: input.instrumentation,
+      wrapper: input.wrapper,
+    }),
   );
   const externals = new Set<string>();
   await using bundle = await rolldown(
