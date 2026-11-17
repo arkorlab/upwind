@@ -161,6 +161,30 @@ describe("a shipped file's stored headers", () => {
     expect(parseProjectManifest(serializeManifest(unsaid))).toStrictEqual(unsaid);
   });
 
+  /**
+   * The set a file's spelling under the asset prefix is given where it differs from its own name's
+   * (`assetPrefixHeaders`) is held in the same table, after the file's own, and read back as built —
+   * and a manifest says its files store headers for a file that stores only that one.
+   */
+  it("hold a file's prefixed spelling's set in the same table", () => {
+    const own = { 'x-canonical': 'yes' };
+    const prefixed = { 'x-prefixed': 'yes' };
+    const two = site({
+      '/_next/static/a.js': { ...file('a', own), assetPrefixHeaders: prefixed },
+      '/_next/static/b.js': { ...file('b'), assetPrefixHeaders: {} },
+    });
+    const stored = JSON.parse(serializeManifest(two)) as Stored;
+
+    expect(two.staticFileHeaders).toBe(true);
+    expect(stored.tables.headers).toStrictEqual([ROUTE.headers, own, prefixed, {}]);
+    expect(stored.staticFiles['/_next/static/a.js']).toMatchObject({
+      headers: 1,
+      assetPrefixHeaders: 2,
+    });
+    expect(stored.staticFiles['/_next/static/b.js']).toMatchObject({ assetPrefixHeaders: 3 });
+    expect(parseProjectManifest(serializeManifest(two))).toStrictEqual(two);
+  });
+
   it('refuse a file that names a place its table does not hold', () => {
     const stored = JSON.parse(serializeManifest(FILES)) as Stored;
     stored.staticFiles['/a.txt'] = { ...stored.staticFiles['/a.txt'], headers: 9 };

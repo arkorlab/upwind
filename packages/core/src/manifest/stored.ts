@@ -1,6 +1,6 @@
 import { canonicalJson } from '../artifact/hash.ts';
 import { compareCodeUnits, encodeUtf8 } from '../util/bytes.ts';
-import { type ProjectManifest, TABLES_SCHEMA_VERSION } from './schema.ts';
+import { type ProjectManifest, type StaticFileEntry, TABLES_SCHEMA_VERSION } from './schema.ts';
 
 /**
  * A manifest as it is stored: what a route repeats of every other, said once.
@@ -103,12 +103,13 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
 
 /**
  * The files as they are stored, in a manifest that says its files store headers
- * (`staticFileHeaders`): one that carries them (`StaticFileEntry.headers`) names them by their
- * place in the routes' own table, after the routes' — every `public/` file under one policy shares
- * a set. Placed in the order the stored JSON lists the files, as the routes are. Any other
- * manifest's files are stored as they are, so one whose files store none stores the bytes it stored
- * before the field — and one that carries headers without saying so, which no build writes, stores
- * them where they are, for its reading to find them there.
+ * (`staticFileHeaders`): one that carries them (`StaticFileEntry.headers`, and those of its
+ * spelling under the asset prefix, `assetPrefixHeaders`) names each set by its place in the routes'
+ * own table, after the routes' — every `public/` file under one policy shares a set. Placed in the
+ * order the stored JSON lists the files, as the routes are, a file's own set before its prefixed
+ * one. Any other manifest's files are stored as they are, so one whose files store none stores the
+ * bytes it stored before the field — and one that carries headers without saying so, which no build
+ * writes, stores them where they are, for its reading to find them there.
  */
 function storedFiles(
   manifest: ProjectManifest,
@@ -122,17 +123,39 @@ function storedFiles(
   return Object.fromEntries(
     keys.flatMap((key) => {
       const file = files[key];
-      if (file === undefined) {
-        return [];
-      }
-      return [
-        [
-          key,
-          file.headers === undefined ? file : { ...file, headers: headers.placeOf(file.headers) },
-        ],
-      ];
+      return file === undefined ? [] : [[key, storedFile(file, headers)]];
     }),
   );
+}
+
+/** Whether a file stores headers: its own name's, or its prefixed spelling's (`storedFiles`). */
+function storesFileHeaders(file: StaticFileEntry): boolean {
+  return file.headers !== undefined || file.assetPrefixHeaders !== undefined;
+}
+
+/**
+ * What a manifest of `files` says of them (`staticFileHeaders`): that some file stores headers,
+ * said of the files themselves where the manifest is built, so that no manifest says one thing and
+ * its files another.
+ */
+export function headersFlag(
+  files: ProjectManifest['staticFiles'],
+): Pick<ProjectManifest, 'staticFileHeaders'> {
+  const stored = Object.values(files ?? {}).some((file) => storesFileHeaders(file));
+  return stored ? { staticFileHeaders: true } : {};
+}
+
+/** A file as it is stored: each set it carries named by its place (`storedFiles`). */
+function storedFile(file: StaticFileEntry, headers: TableWriter): unknown {
+  if (!storesFileHeaders(file)) {
+    return file;
+  }
+  const { headers: own, assetPrefixHeaders: prefixed } = file;
+  return {
+    ...file,
+    ...(own !== undefined && { headers: headers.placeOf(own) }),
+    ...(prefixed !== undefined && { assetPrefixHeaders: headers.placeOf(prefixed) }),
+  };
 }
 
 type Stored = Record<string, unknown>;
@@ -183,10 +206,20 @@ function readRoute(entry: unknown, tables: Tables): unknown {
 
 /** A file as it is read: the headers it names by place put back, where it names any. */
 function readFile(entry: unknown, tables: Tables): unknown {
-  if (!isRecord(entry) || entry['headers'] === undefined) {
+  if (!isRecord(entry)) {
     return entry;
   }
-  return { ...entry, headers: placed(tables.headers, entry['headers'], 'headers') };
+  const { headers: own, assetPrefixHeaders: prefixed } = entry;
+  if (own === undefined && prefixed === undefined) {
+    return entry;
+  }
+  return {
+    ...entry,
+    ...(own !== undefined && { headers: placed(tables.headers, own, 'headers') }),
+    ...(prefixed !== undefined && {
+      assetPrefixHeaders: placed(tables.headers, prefixed, 'headers'),
+    }),
+  };
 }
 
 /**

@@ -414,6 +414,15 @@ export const staticFileEntrySchema = staticFileBytesSchema
      * route's headers are (`stored.ts`).
      */
     headers: z.record(z.string(), z.string()).optional(),
+    /**
+     * The same, for the file asked for under the application's asset prefix
+     * (`staticFileAssetPrefix`), which is how its pages ask for every file of its `_next`: the
+     * rules are judged on the path asked for, and one written for `/assets/_next/static/:path*` or
+     * for `/_next/static/:path*` sets its headers on that spelling alone. Present only where the
+     * two spellings are set different headers — an empty record where the prefixed one is set none
+     * — and absent where they agree, which a rule over every path leaves them doing.
+     */
+    assetPrefixHeaders: z.record(z.string(), z.string()).optional(),
   })
   .superRefine((entry, ctx) => {
     // On the manifest's own build, `dplOnly` would name no deployment to answer, and a reader that
@@ -692,8 +701,9 @@ const projectFields = {
    */
   staticFileTrailingSlash: z.literal(true).optional(),
   /**
-   * Some file stores the headers the rules set on it (`StaticFileEntry.headers`), and a stored
-   * manifest names them by their place in its `tables`: what a reader asks before it looks at any
+   * Some file stores the headers the rules set on it (`StaticFileEntry.headers`, and
+   * `assetPrefixHeaders`), and a stored manifest names them by their place in its `tables`: what a
+   * reader asks before it looks at any
    * file, so that a manifest whose files store none — every one but a build with `i18n`'s, and every
    * one from before the field — costs its reading and its charge nothing more than it did
    * (`fromStoredManifest`, `manifestCharge`). Written from the files by whatever builds the manifest

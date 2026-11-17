@@ -462,6 +462,20 @@ describe('the header sets stored on files', () => {
     expect(manifestCharge(copies, JSON_BYTES) - plain).toBe(4 * ENTRY_BYTES);
   });
 
+  /** A set a file's prefixed spelling is given apart (`assetPrefixHeaders`) is one object more. */
+  it('charges the set a prefixed spelling is given apart once as well', () => {
+    const plain = manifestCharge(listing(), JSON_BYTES);
+    const base = listing(() => POLICY_SET);
+    const prefixedSet = { 'x-prefixed': 'yes' };
+    const files = Object.entries(base.staticFiles ?? {}).map(([pathname, file]) => {
+      const prefixedFile = { ...file, assetPrefixHeaders: prefixedSet };
+      return [pathname, prefixedFile] as const;
+    });
+    const withPrefixed = { ...base, staticFiles: Object.fromEntries(files) };
+
+    expect(manifestCharge(withPrefixed, JSON_BYTES) - plain).toBe(2 * ENTRY_BYTES);
+  });
+
   /**
    * Asked of the manifest alone: one that does not say its files store any has none of them looked
    * at, which a set on a file of it, which no build leaves there, shows by going uncharged.

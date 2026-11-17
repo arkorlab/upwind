@@ -170,12 +170,13 @@ function withoutFileHeaders(manifest: ProjectManifest): ProjectManifest {
   const staticFiles: Record<string, StaticFileEntry> = {};
   const files = Object.entries(manifest.staticFiles ?? {});
   for (const [pathname, file] of files) {
-    if (file.headers === undefined) {
+    if (file.headers === undefined && file.assetPrefixHeaders === undefined) {
       staticFiles[pathname] = file;
       continue;
     }
     const plain = { ...file };
     delete plain.headers;
+    delete plain.assetPrefixHeaders;
     staticFiles[pathname] = plain;
   }
   const unsaid = { ...manifest, staticFiles };

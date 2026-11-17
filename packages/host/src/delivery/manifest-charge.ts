@@ -152,17 +152,15 @@ function fileHeaderObjects(manifest: ProjectManifest): number {
   if (files === undefined || manifest.staticFileHeaders !== true) {
     return 0;
   }
-  let sets: WeakSet<Readonly<Record<string, string>>> | undefined;
+  const sets = new WeakSet<Readonly<Record<string, string>>>();
   let objects = 0;
   for (const file of Object.values(files)) {
-    const { headers } = file;
-    if (headers === undefined) {
-      continue;
-    }
-    sets ??= new WeakSet();
-    if (!sets.has(headers)) {
-      sets.add(headers);
-      objects += 1;
+    // A file's own set, and the one its spelling under the asset prefix is set where that differs.
+    for (const headers of [file.headers, file.assetPrefixHeaders]) {
+      if (headers !== undefined && !sets.has(headers)) {
+        sets.add(headers);
+        objects += 1;
+      }
     }
   }
   return objects;

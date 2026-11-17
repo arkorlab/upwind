@@ -40,7 +40,7 @@ import {
 } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
 import { staticPageFields } from './static-pages.ts';
-import { fromStoredManifest, readManifestJson, toStoredManifest } from './stored.ts';
+import { fromStoredManifest, headersFlag, readManifestJson, toStoredManifest } from './stored.ts';
 
 const PAGES_FALLBACK_PRIVACY = 3;
 const DEFAULT_FIRST_BYTE_TIMEOUT_MS = 15_000;
@@ -146,10 +146,8 @@ function staticFileFields(
   | 'staticFileRequestKeys'
   | 'staticFileTrailingSlash'
 > {
-  // Said of the files themselves, so that no manifest says one thing and its files another.
-  const stored = Object.values(input.staticFiles ?? {}).some((file) => file.headers !== undefined);
   return {
-    ...(stored && { staticFileHeaders: true as const }),
+    ...headersFlag(input.staticFiles),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,

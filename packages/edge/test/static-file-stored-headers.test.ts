@@ -249,6 +249,54 @@ describe('a shipped file the middleware has a say on', () => {
   });
 });
 
+/**
+ * A file of the build's `_next` is asked for under the application's asset prefix by its pages, and
+ * by its own name where nothing prefixes it: the rules are judged on the path asked for, so an entry
+ * stores the prefixed spelling's set apart where the two differ (`assetPrefixHeaders`), and the edge
+ * answers each spelling with its own.
+ */
+describe('a file of the build asked for under the asset prefix', () => {
+  const chunk = '/_next/static/chunks/main.js';
+  const shared = '/_next/static/chunks/shared.js';
+  const own = { 'x-canonical': 'yes', 'x-frame-options': 'DENY' };
+  const prefixed = { 'x-prefixed': 'yes', 'x-frame-options': 'DENY' };
+
+  async function prefixedSite(): Promise<EdgePointer> {
+    const { pointer } = await seedSite({
+      document: pprDocument(),
+      files: { [chunk]: 'main', [shared]: 'shared' },
+      fileHeaders: { [chunk]: own, [shared]: { 'x-frame-options': 'DENY' } },
+      filePrefixedHeaders: { [chunk]: prefixed },
+      foldedHeaderRules: [FOLDED],
+      staticFileAssetPrefix: { basePath: '', assetPrefix: '/assets' },
+    });
+    return pointer;
+  }
+
+  it('answers each spelling with the set stored for it', async () => {
+    const pointer = await prefixedSite();
+    const names = ['x-canonical', 'x-prefixed', 'x-frame-options'];
+
+    const asNamed = await serve(pointer, chunk);
+    const asPrefixed = await serve(pointer, `/assets${chunk}`);
+
+    expect([asNamed.body, asPrefixed.body]).toStrictEqual(['main', 'main']);
+    expect(picked(asNamed.response, names)).toStrictEqual({ ...own, 'x-prefixed': null });
+    expect(picked(asPrefixed.response, names)).toStrictEqual({ ...prefixed, 'x-canonical': null });
+  });
+
+  /** One whose spellings the rules set alike stores one set, which answers both. */
+  it('answers both spellings of a file that stores one set with it', async () => {
+    const pointer = await prefixedSite();
+
+    const asNamed = await serve(pointer, shared);
+    const asPrefixed = await serve(pointer, `/assets${shared}`);
+
+    expect(asNamed.response.headers.get('x-frame-options')).toBe('DENY');
+    expect(asPrefixed.response.headers.get('x-frame-options')).toBe('DENY');
+  });
+});
+
 /** A build whose rules the edge judges on each request stores nothing on its files. */
 describe('a shipped file of a build whose rules the edge judges', () => {
   it('is answered with the rules it judges, as before', async () => {

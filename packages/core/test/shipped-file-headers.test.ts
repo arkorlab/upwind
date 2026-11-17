@@ -275,6 +275,30 @@ describe('the headers a shipped file of an i18n build is stored with', () => {
     expect(other).toBe(one);
   });
 
+  /**
+   * Next.js takes the asset prefix off before it asks whether the path names a locale, and puts no
+   * locale in front of a path that is then under `_next/` (`resolveRoutes`): a file asked for under
+   * the prefix is matched as it was asked for, `/assets/_next/static/…`, and not behind the default
+   * locale. So a rule the locale is put in front of does not match it, and one for the prefixed path
+   * with `locale: false` does.
+   */
+  it('matches a path under the asset prefix as it is asked for', () => {
+    const headerRules = [
+      everyLocalizedPath({ 'X-Localized': 'yes' }),
+      unlocalized('/assets/_next/static/:path*', { 'X-Prefixed': 'yes' }),
+    ];
+    const bundle = fixtureBundle({ i18n: true, headerRules });
+    const headersOf = shippedFileHeadersOf(
+      { ...bundle, config: { ...bundle.config, assetPrefix: '/assets' } },
+      new BuildPatternBudget(),
+    );
+
+    expect(headersOf?.(`/assets${CHUNK}`)).toStrictEqual({
+      'x-prefixed': 'yes',
+      'cache-control': IMMUTABLE,
+    });
+  });
+
   /** A build whose rules the edge judges on each request has every file's judged there. */
   it('is nothing for a build without i18n', () => {
     const headerRules = [unlocalized('/:path*', { 'X-Frame-Options': 'DENY' })];

@@ -281,3 +281,103 @@ describe('what the assembly says of its files headers', () => {
     expect(parseProjectManifest(assembled.serialized)).not.toHaveProperty('staticFileHeaders');
   });
 });
+
+/**
+ * An application with an `assetPrefix` has its pages ask for every file of its `_next` under the
+ * prefix — `/assets/_next/static/…` — which `next build` rewrites to the file after its header rules
+ * have been judged on the path asked for (`beforeFiles`). So a rule written for the prefixed path
+ * sets its headers on that spelling and not on the file's own name, and one for `/_next/static/`
+ * the other way round: the entry stores the prefixed spelling's set apart where the two differ.
+ */
+describe('the files of a build asked for under its asset prefix', () => {
+  /** `next build`'s rewrite of the prefix, first of its `beforeFiles` (`loadRewrites`). */
+  const prefixRewrite: Route = {
+    source: '/assets/_next/:path+',
+    sourceRegex: String.raw`^\/assets\/_next(?:\/((?:[^\/]+?)(?:\/(?:[^\/]+?))*))$`,
+    destination: '/_next/$1',
+  };
+  /** `{ source: '/assets/_next/static/:path*', locale: false }`, as it is handed on. */
+  const prefixedRule: Route = {
+    source: '/assets/_next/static/:path*',
+    sourceRegex: String.raw`^\/assets\/_next\/static${ANY_PATH}`,
+    headers: { 'X-Prefixed': 'yes' },
+  };
+  const ownRule: Route = { ...NEXT_STATIC, headers: { 'X-Canonical': 'yes' } };
+  /** `{ source: '/:path*', locale: false }`: every path, the prefixed spelling among them. */
+  const everyPath: Route = {
+    source: '/:path*',
+    sourceRegex: `^${ANY_PATH}`,
+    headers: { 'X-Frame-Options': 'DENY' },
+  };
+
+  function prefixed(headerRules: readonly Route[], onMatch?: readonly Route[]): DeploymentBundle {
+    const bundle = fixtureBundle({ i18n: true, beforeFiles: [prefixRewrite], headerRules });
+    return {
+      ...bundle,
+      config: { ...bundle.config, assetPrefix: '/assets' },
+      routing: { ...bundle.routing, ...(onMatch !== undefined && { onMatch: [...onMatch] }) },
+    };
+  }
+
+  it('stores what a rule for each spelling sets on it alone', () => {
+    const files = staticFilesOf(
+      prefixed([prefixedRule, ownRule, everyPath]),
+      undefined,
+      new BuildPatternBudget(),
+    );
+
+    expect(files[CHUNK]?.headers).toStrictEqual({
+      'x-canonical': 'yes',
+      'x-frame-options': 'DENY',
+      'cache-control': IMMUTABLE,
+    });
+    // The year-long lifetime `next build` gives its hashed files matches either spelling.
+    expect(files[CHUNK]?.assetPrefixHeaders).toStrictEqual({
+      'x-prefixed': 'yes',
+      'x-frame-options': 'DENY',
+      'cache-control': IMMUTABLE,
+    });
+    // A `public/` file is asked for by its own name alone.
+    expect(files['/hello.txt']).not.toHaveProperty('assetPrefixHeaders');
+  });
+
+  /** The usual case: a rule over every path sets both spellings alike, and one set is stored. */
+  it('stores one set where the rules set both spellings alike', () => {
+    const files = staticFilesOf(prefixed([everyPath]), undefined, new BuildPatternBudget());
+
+    expect(files[CHUNK]?.headers).toStrictEqual({
+      'x-frame-options': 'DENY',
+      'cache-control': IMMUTABLE,
+    });
+    expect(files[CHUNK]).not.toHaveProperty('assetPrefixHeaders');
+  });
+
+  /** Where only the file's own name is set anything, the prefixed spelling is stored as set none. */
+  it('stores the prefixed spelling as set nothing where only the own name is set something', () => {
+    const files = staticFilesOf(prefixed([ownRule], []), undefined, new BuildPatternBudget());
+
+    expect(files[CHUNK]?.headers).toStrictEqual({ 'x-canonical': 'yes' });
+    expect(files[CHUNK]?.assetPrefixHeaders).toStrictEqual({});
+  });
+
+  it('travel through the manifest the edge reads, each set held once', async () => {
+    const assembled = await assembledFrom(prefixed([prefixedRule, ownRule, everyPath]));
+
+    const read = parseProjectManifest(assembled.serialized);
+    const stored = JSON.parse(assembled.serialized) as {
+      readonly staticFiles: Record<string, Record<string, unknown>>;
+    };
+
+    expect(read.staticFiles?.[CHUNK]?.assetPrefixHeaders).toStrictEqual({
+      'x-prefixed': 'yes',
+      'x-frame-options': 'DENY',
+      'cache-control': IMMUTABLE,
+    });
+    expect(read.staticFiles?.[STYLES]?.assetPrefixHeaders).toBe(
+      read.staticFiles?.[CHUNK]?.assetPrefixHeaders,
+    );
+    expect(stored.staticFiles[CHUNK]?.['assetPrefixHeaders']).toBeTypeOf('number');
+    expect(assembled.serialized.split('x-prefixed')).toHaveLength(2);
+    expect(read.staticFileAssetPrefix).toStrictEqual({ basePath: '', assetPrefix: '/assets' });
+  });
+});

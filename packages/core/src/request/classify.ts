@@ -417,6 +417,9 @@ function staticFileBuild(
       ...file.previous,
       immutable: false,
       ...(file.headers !== undefined && { headers: file.headers }),
+      ...(file.assetPrefixHeaders !== undefined && {
+        assetPrefixHeaders: file.assetPrefixHeaders,
+      }),
     };
   }
   return undefined;

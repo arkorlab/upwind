@@ -82,7 +82,13 @@ function slashed(config: BundleConfig, pathname: string): string {
  * The path Next.js's router matches the rules against for a request of `pathname` on a host whose
  * default locale is `locale` (`resolveRoutes`, in `resolve-routes.js`): the path as it came where
  * it names a locale or is under `_next/` once the base path — or else the asset prefix — is off it,
- * and otherwise that path behind the locale, under the base path it came under.
+ * and otherwise that path behind the locale, under the base path it came under. So a file asked for
+ * under the asset prefix, `/assets/_next/static/x.js`, is matched as it was asked for.
+ *
+ * The prefix Next.js takes off is the one `next.config` names, as it names it (`getAssetPrefix`):
+ * a path, or a URL, which no request's path begins with. A build hands on the path of either
+ * (`BundleConfig.assetPrefix`), so for a prefix given as a URL this takes off what Next.js leaves on,
+ * and matches the prefixed path where Next.js would match it behind the default locale.
  */
 function routedPathname(
   config: BundleConfig,
