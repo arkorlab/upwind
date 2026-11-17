@@ -10,6 +10,12 @@ export type IncomingRequest = Request<unknown, IncomingRequestCfProperties>;
 /** The original request owns this value, including when routing rebuilds its forwarding context. */
 const LOG_CORRELATION = Symbol.for('@stayingupwind/edge/log-correlation');
 
+/** Read the original request's existing correlation ID without creating one or trusting headers. */
+export function existingLogCorrelationId(request: IncomingRequest): string | undefined {
+  const original = request as IncomingRequest & { [LOG_CORRELATION]?: string | null };
+  return original[LOG_CORRELATION] ?? undefined;
+}
+
 /** Materialize one ingress-owned UUID, reused when routing rebuilds its forwarding context. */
 function logCorrelationFor(request: IncomingRequest): string {
   const original = request as IncomingRequest & { [LOG_CORRELATION]?: string | null };
