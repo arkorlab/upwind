@@ -19,6 +19,7 @@ import {
   removeSharedCacheOverrides,
   GATED_CACHE_CONTROL,
   REVALIDATE_CACHE_CONTROL,
+  SHIPPED_FILE_ENTITY_HEADERS,
 } from '@stayingupwind/core/request';
 import { releaseStream } from '@stayingupwind/core/util';
 
@@ -95,13 +96,6 @@ const ONE_YEAR_SECONDS = 31_536_000;
 const IMMUTABLE_CACHE_CONTROL = `public, max-age=${ONE_YEAR_SECONDS}, immutable`;
 const CONTENT_RANGE = 'content-range';
 const ACCEPT_RANGES = 'accept-ranges';
-/** What describes the bytes on the wire, which no rule may say otherwise about. */
-const ENTITY_HEADERS: ReadonlySet<string> = new Set([
-  ACCEPT_RANGES,
-  CONTENT_LENGTH,
-  CONTENT_RANGE,
-  'etag',
-]);
 /**
  * A file the middleware had a say on is what one visitor was allowed; a shared cache must not hand
  * it to the next, however immutable the bytes. The visitor's own cache may keep it, revalidated.
@@ -193,10 +187,17 @@ function defaultCacheControl(file: StaticFileEntry): string {
 /**
  * What the application set on the file's path, laid over `headers`: what `next.config` sets, as the
  * application's router would; then what the middleware set, part of what the application answers
- * with for a file as for a document. A cookie of either is scoped as a Function's is.
+ * with for a file as for a document. A cookie of either is scoped as a Function's is. No rule says
+ * otherwise about what describes the bytes (`SHIPPED_FILE_ENTITY_HEADERS`) — one judged on the
+ * request, or one the file's entry stores (`withStoredFileHeaders`), which are laid here together.
  */
 function applicationHeaders(input: StaticFileInput, headers: Headers): void {
-  layStoredConfiguredOver(headers, input.configured, input.edge.forwarding, ENTITY_HEADERS);
+  layStoredConfiguredOver(
+    headers,
+    input.configured,
+    input.edge.forwarding,
+    SHIPPED_FILE_ENTITY_HEADERS,
+  );
   if (input.middleware !== undefined) {
     mergeScopedMiddlewareHeaders(headers, input.middleware.responseHeaders, input.edge.forwarding);
   }

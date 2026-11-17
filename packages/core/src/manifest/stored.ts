@@ -86,6 +86,7 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
     }
     return { ...route, members: { ...members, bypassFor: conditions.placeOf(members.bypassFor) } };
   });
+  const staticFiles = storedFiles(manifest, headers);
   const tables = {
     headers: headers.values,
     ...(conditions.values.length > 0 && { conditions: conditions.values }),
@@ -95,8 +96,43 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
     ...manifest,
     routes,
     ...(dynamicRoutes !== undefined && { dynamicRoutes }),
+    ...(staticFiles !== undefined && { staticFiles }),
     tables,
   };
+}
+
+/**
+ * The files as they are stored, in a manifest that says its files store headers
+ * (`staticFileHeaders`): one that carries them (`StaticFileEntry.headers`) names them by their
+ * place in the routes' own table, after the routes' — every `public/` file under one policy shares
+ * a set. Placed in the order the stored JSON lists the files, as the routes are. Any other
+ * manifest's files are stored as they are, so one whose files store none stores the bytes it stored
+ * before the field — and one that carries headers without saying so, which no build writes, stores
+ * them where they are, for its reading to find them there.
+ */
+function storedFiles(
+  manifest: ProjectManifest,
+  headers: TableWriter,
+): Record<string, unknown> | undefined {
+  const files = manifest.staticFiles;
+  if (files === undefined || manifest.staticFileHeaders !== true) {
+    return undefined;
+  }
+  const keys = Object.keys(files).toSorted(compareCodeUnits);
+  return Object.fromEntries(
+    keys.flatMap((key) => {
+      const file = files[key];
+      if (file === undefined) {
+        return [];
+      }
+      return [
+        [
+          key,
+          file.headers === undefined ? file : { ...file, headers: headers.placeOf(file.headers) },
+        ],
+      ];
+    }),
+  );
 }
 
 type Stored = Record<string, unknown>;
@@ -110,7 +146,10 @@ function tableOf(tables: Stored, name: keyof Tables): unknown[] {
   return Array.isArray(table) ? table : [];
 }
 
-/** The value a route names by its place in `table`; a place the table does not hold is refused. */
+/**
+ * The value a route or a file names by its place in `table`; a place the table does not hold is
+ * refused.
+ */
 function placed(table: readonly unknown[], place: unknown, what: string): unknown {
   if (
     typeof place !== 'number' ||
@@ -119,7 +158,7 @@ function placed(table: readonly unknown[], place: unknown, what: string): unknow
     place >= table.length
   ) {
     throw new Error(
-      `a route names ${what} ${String(place)}, which the manifest's table does not hold`,
+      `a stored entry names ${what} ${String(place)}, which the manifest's table does not hold`,
     );
   }
   return table[place];
@@ -140,6 +179,29 @@ function readRoute(entry: unknown, tables: Tables): unknown {
       preloads: placed(tables.preloads, entry['preloads'], 'preloads'),
     }),
   };
+}
+
+/** A file as it is read: the headers it names by place put back, where it names any. */
+function readFile(entry: unknown, tables: Tables): unknown {
+  if (!isRecord(entry) || entry['headers'] === undefined) {
+    return entry;
+  }
+  return { ...entry, headers: placed(tables.headers, entry['headers'], 'headers') };
+}
+
+/**
+ * The files as they are read, where the manifest says they name headers by place
+ * (`staticFileHeaders`), and nothing to lay over the manifest where it does not — every manifest
+ * from before the field, and every build whose rules the edge judges itself. That is asked of the
+ * manifest alone, ahead of its first request: not one of its files is looked at, nor copied.
+ */
+function readFiles(manifest: Stored, tables: Tables): Stored {
+  const files = manifest['staticFiles'];
+  if (manifest['staticFileHeaders'] !== true || !isRecord(files)) {
+    return {};
+  }
+  const entries = Object.entries(files).map(([key, file]) => [key, readFile(file, tables)]);
+  return { staticFiles: Object.fromEntries(entries) };
 }
 
 /** A dynamic route as it is read: its members' conditions put back, where they carry any. */
@@ -198,6 +260,7 @@ export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<WeakK
     ...manifest,
     routes,
     ...(dynamicRoutes !== undefined && { dynamicRoutes }),
+    ...readFiles(manifest, tables),
   };
 }
 

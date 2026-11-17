@@ -45,6 +45,7 @@ import {
 } from './manifest.ts';
 import { edgePointerOf } from './pointer.ts';
 import { DOCUMENT_KIND, type ShellToEncode, shellsOf } from './shells.ts';
+import type { FileHeadersOutcome } from './static-files.ts';
 
 /**
  * A deployment made from its build in one process, as two calls — `stageDeployment`, which imports
@@ -173,6 +174,12 @@ export interface StagedDeployment {
    * read from the bucket: a publication reads each again, as it stands then.
    */
   readonly blobs: readonly BlobRef[];
+  /**
+   * Whether the manifest's files store the headers the rules of `next.config` set on them, and why
+   * not where they were left out (`FileHeadersOutcome`, of the assembly): the deployment is staged
+   * all the same, and a deployer that tells its user one thing about it tells them this.
+   */
+  readonly fileHeaders: FileHeadersOutcome;
 }
 
 /** Entries per call: within `MAX_SEED_BATCH`, and as many as a failed call has to send again. */
@@ -428,8 +435,8 @@ export async function stageDeployment(
   }
   const blobs = await stageBlobs(target, input);
   const token = target.cache === undefined ? undefined : await seedCache(target.cache, input);
-  const { manifest, manifestId, serialized } = assembled;
-  return { manifest, manifestId, serialized, token, blobs };
+  const { manifest, manifestId, serialized, fileHeaders } = assembled;
+  return { manifest, manifestId, serialized, token, blobs, fileHeaders };
 }
 
 /**

@@ -140,12 +140,16 @@ function staticFileFields(
   input: BuildProjectManifestInput,
 ): Pick<
   ProjectManifest,
+  | 'staticFileHeaders'
   | 'staticFileLocales'
   | 'staticFileAssetPrefix'
   | 'staticFileRequestKeys'
   | 'staticFileTrailingSlash'
 > {
+  // Said of the files themselves, so that no manifest says one thing and its files another.
+  const stored = Object.values(input.staticFiles ?? {}).some((file) => file.headers !== undefined);
   return {
+    ...(stored && { staticFileHeaders: true as const }),
     ...(input.staticFileLocales !== undefined && { staticFileLocales: input.staticFileLocales }),
     ...(input.staticFileAssetPrefix !== undefined && {
       staticFileAssetPrefix: input.staticFileAssetPrefix,

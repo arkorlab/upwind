@@ -139,6 +139,36 @@ function routeObjects(manifest: ProjectManifest): number {
 }
 
 /**
+ * The header sets a manifest's files store (`StaticFileEntry.headers`), each charged once however
+ * many files name it: a stored manifest holds a set once in its tables, and reading it hands every
+ * file sharing the set the one object (`fromStoredManifest`). Counted by that object, as a class's
+ * shared conditions are (`ruleObjects`) — so a manifest assembled before it is stored, whose files
+ * each hold a copy, is charged for every copy, which is more than its reading takes. Asked only of a
+ * manifest that says its files store any (`staticFileHeaders`): every other one is charged as it
+ * was, with not one of its files looked at again.
+ */
+function fileHeaderObjects(manifest: ProjectManifest): number {
+  const files = manifest.staticFiles;
+  if (files === undefined || manifest.staticFileHeaders !== true) {
+    return 0;
+  }
+  let sets: WeakSet<Readonly<Record<string, string>>> | undefined;
+  let objects = 0;
+  for (const file of Object.values(files)) {
+    const { headers } = file;
+    if (headers === undefined) {
+      continue;
+    }
+    sets ??= new WeakSet();
+    if (!sets.has(headers)) {
+      sets.add(headers);
+      objects += 1;
+    }
+  }
+  return objects;
+}
+
+/**
  * The routes, files and pathnames a manifest lists, and the objects of its rules. A pathname found
  * to be of a gated route (`gatedPathnames`) is charged as an entry of its own: unlike one a split
  * deployment names a Function for, it may be a template no other table lists.
@@ -172,6 +202,7 @@ function manifestObjects(manifest: ProjectManifest): number {
     bodies +
     routeObjects(manifest) +
     keysOf(manifest.staticFiles) +
+    fileHeaderObjects(manifest) +
     keysOf(manifest.exactPathnames) +
     keysOf(manifest.filesystemPages) +
     keysOf(manifest.gates) +

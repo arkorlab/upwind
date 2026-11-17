@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import { seedRouteFor } from '../../host/src/bundle/cache-seed.ts';
+import { shippedFileHeadersOf } from '../src/bundle/file-headers.ts';
+import { nativeBuildPatterns } from '../src/bundle/pattern-matcher.ts';
 import type { DeploymentBundle, Prerender, Route, RouterReferences } from '../src/bundle/schema.ts';
 import { prefetchSegments, routePagesData, routePayloads } from '../src/bundle/segments.ts';
 import {
@@ -45,6 +47,7 @@ import {
 } from './fixtures/bundle.ts';
 
 const EVERY_PATH = { source: '/(.*)', sourceRegex: String.raw`^(?:\/(.*))(?:\/)?$` };
+const EVERY_PATH_DENIED = { ...EVERY_PATH, headers: { 'X-Frame-Options': 'DENY' } };
 
 function ids(prerenders: readonly { id: string }[]): string[] {
   return prerenders.map((prerender) => prerender.id);
@@ -1272,6 +1275,7 @@ describe('shellHeaders', () => {
 
   it('folds in an unconditional header rule that matches, never a conditional one', () => {
     const root = rootPrerender();
+    const localized = fixtureBundle({ i18n: true, headerRules: [EVERY_PATH_DENIED] });
     const bundle = fixtureBundle({
       headerRules: [
         { ...EVERY_PATH, headers: { 'X-Frame-Options': 'DENY' } },
@@ -1285,7 +1289,12 @@ describe('shellHeaders', () => {
     expect(shellHeaders(bundle, root)).not.toHaveProperty('x-other');
     // These three, and the three `next build` writes into `onMatch`, for the edge to judge.
     expect(headerRulesOf(bundle)).toHaveLength(6);
-    expect(headerRulesOf(fixtureBundle({ i18n: true }))).toStrictEqual([]);
+    // A build with `i18n` publishes none for the edge to judge on each request: its shipped files
+    // carry what the unconditional ones set on each instead, judged when the manifest is written.
+    expect(headerRulesOf(localized)).toStrictEqual([]);
+    expect(shippedFileHeadersOf(localized, nativeBuildPatterns)?.('/hello.txt')).toStrictEqual({
+      'x-frame-options': 'DENY',
+    });
   });
 
   /** A header rule too: one written for `/STATIC` sets its headers on the page at `/static`. */
@@ -1308,6 +1317,10 @@ describe('shellHeaders', () => {
    * `Service-Worker-Allowed` allows: a rule `next build` writes itself, whose pattern names the
    * whole path. The edge publishes no rules for a build whose routing it does not reproduce — one
    * with `i18n` — and the worker was refused registration.
+   *
+   * The application's own rule is not among them, and the script went out without the headers it
+   * set — `X-Frame-Options`, as here, or a policy. It is carried on the file instead, beside the
+   * scope, judged when the manifest is written (`shippedFileHeadersOf`).
    */
   it('publishes the rules next build writes itself for a build the edge does not route', () => {
     const serviceWorker = {
@@ -1319,7 +1332,7 @@ describe('shellHeaders', () => {
     const bundle = fixtureBundle({
       basePath: '/base',
       i18n: true,
-      headerRules: [serviceWorker, { ...EVERY_PATH, headers: { 'X-Frame-Options': 'DENY' } }],
+      headerRules: [serviceWorker, EVERY_PATH_DENIED],
     });
 
     expect(headerRulesOf(bundle)).toStrictEqual([
@@ -1329,6 +1342,12 @@ describe('shellHeaders', () => {
         phase: 'beforeMiddleware',
       },
     ]);
+    expect(
+      shippedFileHeadersOf(
+        bundle,
+        nativeBuildPatterns,
+      )?.('/base/_next/static/service-worker/sw.js'),
+    ).toStrictEqual({ 'service-worker-allowed': '/base', 'x-frame-options': 'DENY' });
   });
 
   /**

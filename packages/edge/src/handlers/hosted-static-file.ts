@@ -207,7 +207,12 @@ export function routeHostedStaticFile(input: HostedStaticFileInput): Promise<Res
         : { abandonedShells: { ctx: replaced.ctx, requests: requestsOf(replaced) } },
     );
   }
-  return serveAfterMiddleware(input, {
+  // What the file's entry stores goes over the rules judged on the request (`withStoredFileHeaders`):
+  // the file asked for is the one whose path the router judged its rules on, wherever a middleware
+  // rewrite then lands. An entry that stores none leaves the input as it came.
+  const { headers } = input.file;
+  const gated = headers === undefined ? input : { ...input, fileHeaders: headers };
+  return serveAfterMiddleware(gated, {
     ready: (edge) => {
       servedInput = { ...input, edge };
     },

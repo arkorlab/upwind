@@ -122,6 +122,7 @@ export {
   type ServingBundle,
 } from './serving.ts';
 export { spelledPrefixOf } from './spelled-prefix.ts';
+export { type ShippedFileHeaders, shippedFileHeadersOf } from './file-headers.ts';
 export {
   staticFileAssetPrefixOf,
   staticFileLocalesOf,

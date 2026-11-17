@@ -78,6 +78,13 @@ export interface SiteOptions {
   readonly segments?: Readonly<Record<string, string>> | undefined;
   /** The rules of `next.config` `headers()`, in Next.js's order; none, absent. */
   readonly headerRules?: readonly HeaderRule[] | undefined;
+  /**
+   * The unconditional rules a build with `i18n` folds into its routes' headers rather than publish
+   * for the edge to judge (`foldedHeaderRules`); none, absent.
+   */
+  readonly foldedHeaderRules?: readonly HeaderRule[] | undefined;
+  /** What such a build stores on a file of `files`, by its pathname (`StaticFileEntry.headers`). */
+  readonly fileHeaders?: Readonly<Record<string, Readonly<Record<string, string>>>> | undefined;
   /** What the page's prerender is not served under, as Next.js recorded it; nothing, absent. */
   readonly bypassFor?: RouteEntry['bypassFor'];
   /** The routes the build declared a gate for, each with its gate's name; none, absent. */
@@ -100,18 +107,21 @@ export const KEPT_DEPLOYMENT = 'dpl_before';
 async function fileEntries(
   files: Readonly<Record<string, string>>,
   kept = false,
+  headers: SiteOptions['fileHeaders'] = {},
 ): Promise<Record<string, StaticFileEntry>> {
   const entries: Record<string, StaticFileEntry> = {};
   for (const [pathname, text] of Object.entries(files)) {
     const bytes = encodeUtf8(text);
     const sha256 = await sha256Hex(bytes);
     await env.ARTIFACTS.put(blobObjectKey(sha256), bytes);
+    const stored = Object.hasOwn(headers, pathname) ? headers[pathname] : undefined;
     entries[pathname] = {
       sha256,
       byteLength: bytes.byteLength,
       contentType: 'text/plain; charset=utf-8',
       immutable: false,
       ...(kept && { deploymentId: KEPT_DEPLOYMENT }),
+      ...(stored !== undefined && { headers: stored }),
     };
   }
   return entries;
@@ -173,11 +183,14 @@ export async function seedSite(options: SiteOptions): Promise<Site> {
     routes: [route],
     app: APP,
     staticFiles: {
-      ...(await fileEntries(options.keptFiles ?? {}, true)),
-      ...(await fileEntries(options.files ?? {})),
+      ...(await fileEntries(options.keptFiles ?? {}, true, options.fileHeaders)),
+      ...(await fileEntries(options.files ?? {}, false, options.fileHeaders)),
     },
     images: options.images,
     ...(options.headerRules !== undefined && { headerRules: [...options.headerRules] }),
+    ...(options.foldedHeaderRules !== undefined && {
+      foldedHeaderRules: [...options.foldedHeaderRules],
+    }),
     ...(options.dynamicRoutes !== undefined && { dynamicRoutes: [...options.dynamicRoutes] }),
     ...(options.reservedRoutes !== undefined && { reservedRoutes: options.reservedRoutes }),
     gates: options.gates,
