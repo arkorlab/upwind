@@ -137,9 +137,11 @@ describe('a logical request custom log context', () => {
 
       expect(ids).toHaveLength(2);
       expect(isLogCorrelationId(ids[0])).toBe(true);
-      expect(ids[1]).toBe(ids[0]);
-      expect(existingLogCorrelationId(request)).toBe(ids[0]);
-      expect(existingLogCorrelationId(new Request(request))).toBeUndefined();
+      expect({
+        forwarded: ids[1],
+        existing: existingLogCorrelationId(request),
+        cloned: existingLogCorrelationId(new Request(request)),
+      }).toStrictEqual({ forwarded: ids[0], existing: ids[0], cloned: undefined });
       expect(mint).toHaveBeenCalledTimes(1);
       expect(forwarded[1]?.headers.get(NEXT_RESUME_HEADER)).toBe(resume ? '1' : null);
       expect(answer.body).toContain(resume ? 'Hello dynamic' : 'application');
