@@ -21,6 +21,7 @@ import {
   invokeEntry,
   notFoundResponse,
   resume,
+  routeBodyResponse,
   type RoutedInput,
   staticResponse,
   withCacheState,
@@ -239,7 +240,7 @@ export async function serveRouteHandler(
   return (
     current ??
     withCacheState(
-      staticResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK),
+      routeBodyResponse(store, built, recordedContentType(built), built.initialStatus ?? HTTP_OK),
       'HIT',
     )
   );

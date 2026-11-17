@@ -210,6 +210,38 @@ export function staticResponse(
 }
 
 /**
+ * The headers of a route handler's answer that say how its body travelled, which `next start` does
+ * not send from 16.4.5 on (`FORBIDDEN_HEADERS`, `server/send-response.ts`), a body its cache holds
+ * included: it answers a prerendered route by handing the recorded body and headers to that same
+ * `sendResponse`.
+ */
+const ROUTE_FRAMING_HEADERS = ['content-encoding', 'content-length', 'transfer-encoding'] as const;
+
+/**
+ * A route handler's body as the build wrote it (`staticResponse`), without the framing its headers
+ * recorded. Next.js records a route's answer as it was handed back (`export/routes/app-route.js`):
+ * one that hands a `fetch` on unchanged is stored as the bytes Node.js's Fetch decoded, under the
+ * coding they arrived with and their encoded length. Sent under those, a client fails to decode the
+ * body, and on a connection kept for the next request the length ends the answer early and leaves
+ * the rest to be read as another answer (GHSA-pc58-hwjq-p385). As in `next start`, a route that
+ * compressed its own body is sent as plain bytes, and compressing is left to the server in front.
+ * A generation's record is filtered so already (`generationResponseHeaders`); a page's headers
+ * describe a document the build rendered itself, and are left as they are.
+ */
+export function routeBodyResponse(
+  store: Store,
+  prerender: Prerender,
+  contentType: string,
+  status: number,
+): Response {
+  const response = staticResponse(store, prerender, contentType, status);
+  for (const name of ROUTE_FRAMING_HEADERS) {
+    response.headers.delete(name);
+  }
+  return response;
+}
+
+/**
  * Where an answer complete from the cache came from, as Next.js says it (`x-nextjs-cache`): `HIT`
  * from the cache, `STALE` from it while it is regenerated, `MISS` rendered for the request. Its own
  * server sets it on a page answered whole, and not on one a resume completes; in minimal mode it
