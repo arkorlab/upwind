@@ -14,7 +14,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { DispatchApp } from '../src/edge-runtime.ts';
 import { handlePassthrough } from '../src/handlers/passthrough.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
-import { forwardingFor, type IncomingRequest } from '../src/request-context.ts';
+import {
+  existingLogCorrelationId,
+  forwardingFor,
+  type IncomingRequest,
+} from '../src/request-context.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
 import { htmlResponse, navigation, pprDocument, seedSite, type Site } from './helpers/site.ts';
@@ -77,6 +81,20 @@ describe('a logical request custom log context', () => {
     vi.restoreAllMocks();
   });
 
+  it('reads no correlation from client headers and creates nothing before a dispatch', () => {
+    const request = navigation('/api/start', {
+      headers: { [LOG_CORRELATION_HEADER]: 'client-forgery' },
+    });
+    const mint = vi.spyOn(crypto, 'randomUUID');
+    const properties = Object.getOwnPropertySymbols(request);
+
+    expect(existingLogCorrelationId(request)).toBeUndefined();
+    expect(existingLogCorrelationId(request)).toBeUndefined();
+    expect(mint).not.toHaveBeenCalled();
+    expect(Object.getOwnPropertySymbols(request)).toStrictEqual(properties);
+    expect(request.headers.get(LOG_CORRELATION_HEADER)).toBe('client-forgery');
+  });
+
   it.each([false, true])(
     'shares one trusted id between middleware and the application (resume: %s)',
     async (resume) => {
@@ -119,7 +137,11 @@ describe('a logical request custom log context', () => {
 
       expect(ids).toHaveLength(2);
       expect(isLogCorrelationId(ids[0])).toBe(true);
-      expect(ids[1]).toBe(ids[0]);
+      expect({
+        forwarded: ids[1],
+        existing: existingLogCorrelationId(request),
+        cloned: existingLogCorrelationId(new Request(request)),
+      }).toStrictEqual({ forwarded: ids[0], existing: ids[0], cloned: undefined });
       expect(mint).toHaveBeenCalledTimes(1);
       expect(forwarded[1]?.headers.get(NEXT_RESUME_HEADER)).toBe(resume ? '1' : null);
       expect(answer.body).toContain(resume ? 'Hello dynamic' : 'application');
@@ -169,6 +191,7 @@ describe('a logical request custom log context', () => {
     expect(isLogCorrelationId(ids[0])).toBe(true);
     expect(ids[1]).toBe(ids[0]);
     expect(ids[2]).not.toBe(ids[0]);
+    expect(existingLogCorrelationId(original)).toBe(ids[0]);
     expect(mint).toHaveBeenCalledTimes(2);
   });
 
@@ -260,6 +283,7 @@ describe('a logical request custom log context', () => {
     const answer = await routed(site, request, dispatch);
 
     expect(answer.body).toBe('User-agent: *');
+    expect(existingLogCorrelationId(request)).toBeUndefined();
     expect(answer.response.headers.has('x-forged-condition')).toBe(false);
     expect(answer.response.headers.has(LOG_CORRELATION_HEADER)).toBe(false);
     expect(dispatch).not.toHaveBeenCalled();
