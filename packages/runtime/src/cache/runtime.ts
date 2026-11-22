@@ -229,10 +229,43 @@ export interface CacheRuntimeOptions {
   readonly holdMs?: number | undefined;
 }
 
+/**
+ * What a data memo's answer says beside the strings counted on their own, in characters as JSON
+ * writes it: its keys, its punctuation, its numbers, its kinds and an invalidation's moments — some
+ * 360 with every field a host answers set, each number at its longest.
+ */
+const DATA_ANSWER_CHARACTERS = 512;
+/** What JSON writes between the tags of an answer: a comma. */
+const TAG_SEPARATOR_CHARACTERS = 1;
+
+/** The characters JSON writes `value` in — its quotes, and what it escapes — for a short string. */
+function writtenLength(value: string): number {
+  return JSON.stringify(value).length;
+}
+
+/**
+ * What a data memo holds: its bytes, and its answer, counted in the characters JSON would write it
+ * in, from its strings — ids, handler, tags and an artifact id as JSON writes each, escapes and all
+ * (cubic), and the value's base64, which needs none, by its length — beside an allowance for the
+ * rest (`DATA_ANSWER_CHARACTERS`). Written as JSON whole to be measured, an answer that carries its
+ * value inline was its whole base64 copied into a string of its own on the path of the read that
+ * keeps it: 0.6 ms for a value of 512 KiB, 9.7 ms for one of 8 MiB.
+ */
 function dataBytes(memo: DataMemo): number {
-  return memo.kind === 'missing'
-    ? 0
-    : memo.bytes.buffer.byteLength + JSON.stringify(memo.response).length * UTF16_BYTES;
+  if (memo.kind === 'missing') {
+    return 0;
+  }
+  const { entryId, generationId, entry, value } = memo.response;
+  let characters =
+    DATA_ANSWER_CHARACTERS +
+    writtenLength(entryId) +
+    writtenLength(generationId) +
+    (entry.handler === undefined ? 0 : writtenLength(entry.handler));
+  for (const tag of entry.tags) {
+    characters += writtenLength(tag) + TAG_SEPARATOR_CHARACTERS;
+  }
+  characters += value.kind === 'inline' ? value.base64.length : writtenLength(value.artifactId);
+  return memo.bytes.buffer.byteLength + characters * UTF16_BYTES;
 }
 
 function recordBytes(pack: DecodedGenerationPack | null): number {
