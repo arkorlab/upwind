@@ -27,6 +27,7 @@ import type { DispatchApp } from '../edge-runtime.ts';
 import { passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import { stampLogCorrelation } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { layConfiguredUnder } from './configured-headers.ts';
@@ -462,7 +463,9 @@ async function runMiddlewareIn(
   let dispatched: Promise<Response> | undefined;
   const startedAt = edge.runtime.now();
   try {
-    dispatched = dispatch(target.scriptName, forwarded, budget?.limits);
+    dispatched = inEdgeSpan(edge.runtime, 'edge.middleware', () =>
+      dispatch(target.scriptName, forwarded, budget?.limits),
+    );
     response = await (budget === undefined
       ? dispatched
       : withDeadline(dispatched, budget.timeoutMs, 'middleware'));

@@ -2,7 +2,8 @@ import { type AppRuntime, functionFor, type ProjectManifest } from '@stayingupwi
 import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { withScopeRevision } from '../cache/scope-signal.ts';
-import type { EdgeRuntime } from '../edge-runtime.ts';
+import type { DispatchApp, EdgeRuntime } from '../edge-runtime.ts';
+import { inDispatchSpan } from '../observability/spans.ts';
 import { stampLogCorrelation } from '../request-context.ts';
 import { dispatchSplitApp, NoApplicationError, NoDispatchError, unsent } from './app-dispatch.ts';
 export {
@@ -44,6 +45,7 @@ export function functionOfRequest(
 }
 
 interface UpstreamTarget {
+  readonly continuation?: true;
   readonly function?: string | undefined;
   readonly scopeId?: string | undefined;
   readonly logCorrelationId?: (() => string) | undefined;
@@ -63,7 +65,8 @@ export function fetchUpstream(
   if (app === undefined) {
     return unsent(new NoApplicationError());
   }
-  if (runtime.dispatchApp === undefined) {
+  const { dispatchApp, tracing } = runtime;
+  if (dispatchApp === undefined) {
     return unsent(new NoDispatchError());
   }
   // Told where the deployment's scope stands, as this isolate last found it: a Function behind it
@@ -71,16 +74,27 @@ export function fetchUpstream(
   // different from the deployment id used while the manifest is still being read.
   const told = withScopeRevision(runtime, target?.scopeId ?? app.deploymentId, request);
   stampLogCorrelation(told, target?.logCorrelationId);
+  // Trace each actual attempt. A split request's own promise identifies its progress even
+  // while a second attempt is pending, and an unsent request above keeps its own identity.
+  const dispatch: DispatchApp =
+    tracing === undefined
+      ? dispatchApp
+      : (script, forwarded) => {
+          const operation = target?.continuation === true ? 'edge.resume' : 'edge.dispatch';
+          return inDispatchSpan(tracing, operation, () =>
+            dispatchApp.call(runtime, script, forwarded),
+          );
+        };
   if (app.functions === undefined) {
     // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
     // eslint-disable-next-line sonarjs/no-try-promise
     try {
-      return runtime.dispatchApp(app.scriptName, told);
+      return dispatch.call(runtime, app.scriptName, told);
     } catch (error) {
       // Preserve the host's failure value, as the split async dispatcher does.
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       return Promise.reject(error);
     }
   }
-  return dispatchSplitApp(runtime.dispatchApp, app, told, target?.function);
+  return dispatchSplitApp(dispatch, app, told, target?.function);
 }

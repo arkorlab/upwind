@@ -53,11 +53,18 @@ export function transformMode(transform: TransformImage | undefined): string {
  */
 export type BlobWorker = (path: string, init: RequestInit) => Promise<Response>;
 
+interface DeliveryTracing {
+  enterSpan<T>(name: string, operation: () => T): T;
+  startActiveSpan<T>(name: string, operation: (span: Pick<Span, 'end' | 'isTraced'>) => T): T;
+}
+
 /** What the edge reaches out with on a request; tests replace fetch, time, dispatch and the rest. */
 export interface EdgeRuntime {
   readonly fetchImpl: FetchImpl;
   readonly now: () => number;
   readonly memory: EdgeMemory;
+  /** Native Workers tracing for hosts that enable delivery spans. */
+  readonly tracing?: DeliveryTracing | undefined;
   /**
    * The deployment's Functions; `undefined` where the host has none to reach, and every request
    * that would go to one is answered `502` instead.

@@ -29,6 +29,7 @@ import type { EdgeRuntime } from '../edge-runtime.ts';
 import { buildPassthroughRequest, passthroughHeaders } from '../forwarding.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { laterHeaderRules, layConfiguredOver } from './configured-headers.ts';
@@ -603,6 +604,10 @@ function anonymous(input: PassthroughInput): boolean {
 }
 
 export function handlePassthrough(input: PassthroughInput): Promise<Response> {
+  return inEdgeSpan(input.runtime, 'edge.passthrough', () => servePassthrough(input));
+}
+
+function servePassthrough(input: PassthroughInput): Promise<Response> {
   const detached =
     input.waitUntil !== undefined &&
     input.request.method === 'POST' &&

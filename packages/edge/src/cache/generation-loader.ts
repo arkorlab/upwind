@@ -6,6 +6,7 @@ import {
 import type { RuntimeCacheSettings } from '@stayingupwind/host/delivery';
 
 import { logWarn } from '../observability/logger.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import type { RecordBytes } from './cache-body.ts';
 import { isInvalidated, transferInvalidations } from './condemned.ts';
@@ -611,11 +612,22 @@ async function loadAfterKv(edge: EdgeContext, read: BesideRead): Promise<Generat
  * and behind the response for one that found its hold over (`generation-hold.ts`), whose record —
  * served, and held again — is the one the read is weighed against (`heldRevision`).
  */
-export async function readGeneration(
+export function readGeneration(
   edge: EdgeContext,
   key: GenerationKey,
   settings: RuntimeCacheSettings,
   options: LoadOptions = {},
+): Promise<GenerationLoad> {
+  return inEdgeSpan(edge.runtime, 'edge.cache_record', () =>
+    readStoredGeneration(edge, key, settings, options),
+  );
+}
+
+async function readStoredGeneration(
+  edge: EdgeContext,
+  key: GenerationKey,
+  settings: RuntimeCacheSettings,
+  options: LoadOptions,
 ): Promise<GenerationLoad> {
   const startedAt = edge.runtime.now();
   const recordKey = kvGenerationKey(key.scopeId, key.entryId);

@@ -26,8 +26,10 @@ import { CacheBody, type RecordBytes } from '../cache/cache-body.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import { readManifestCopy } from './blobs.ts';
 import { checkManifestContentTypes } from './manifest-content-types.ts';
+import { selectedPolicy } from './selected-policy.ts';
 import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 /** Each cold backend gets the same two seconds as an immutable blob or record read. */
@@ -454,11 +456,22 @@ async function readCopies(
   return { kv: fromKv, durable: fromDurable };
 }
 
-export async function getManifest(
+export function getManifest(
   env: EdgeBindings,
   runtime: EdgeRuntime,
   manifestId: string,
   options: ManifestOptions = {},
+): Promise<Lookup<ProjectManifest>> {
+  return inEdgeSpan(runtime, 'edge.manifest', () =>
+    lookupManifest(env, runtime, manifestId, options),
+  );
+}
+
+async function lookupManifest(
+  env: EdgeBindings,
+  runtime: EdgeRuntime,
+  manifestId: string,
+  options: ManifestOptions,
 ): Promise<Lookup<ProjectManifest>> {
   const holdAbsence = options.holdAbsence ?? true;
   const cached = held(runtime, manifestId);
@@ -676,7 +689,18 @@ function heldStandIn(
  * it is served immediately and KV runs in the background, so a hot shell is not first-byte behind
  * a 60 s TTL.
  */
-export async function getPolicy(
+export function getPolicy(
+  env: EdgeBindings,
+  runtime: EdgeRuntime,
+  policyId: string,
+  holdRefresh?: HoldRefresh,
+): Promise<PolicyLookup> {
+  return inEdgeSpan(runtime, 'edge.policy', () =>
+    lookupPolicy(env, runtime, policyId, holdRefresh),
+  );
+}
+
+async function lookupPolicy(
   env: EdgeBindings,
   runtime: EdgeRuntime,
   policyId: string,
@@ -700,27 +724,6 @@ export async function getPolicy(
   return resolvePolicyFromKv(env, runtime, policyId, false);
 }
 
-/** Parsed once per immutable pointer object; never installed in the shared policy-id cache. */
-const selectedPolicies = new WeakMap<EdgePointer, DeliveryPolicy | null>();
-
-/** The exact policy copied by the publisher, or no usable hint. */
-function selectedPolicy(pointer: EdgePointer): DeliveryPolicy | undefined {
-  if (pointer.selectedPolicy === undefined) {
-    return undefined;
-  }
-  if (pointer.selectedPolicy === 'builtin') {
-    return builtinDeliveryPolicy(pointer.policyId);
-  }
-  const cached = selectedPolicies.get(pointer);
-  if (cached !== undefined) {
-    return cached ?? undefined;
-  }
-  const parsed = deliveryPolicySchema.safeParse(pointer.selectedPolicy);
-  const policy = parsed.success && parsed.data.id === pointer.policyId ? parsed.data : null;
-  selectedPolicies.set(pointer, policy);
-  return policy ?? undefined;
-}
-
 /**
  * Live traffic's selected policy: a publisher's exact snapshot, or the existing lookup. Policy
  * specs never change under an id; only the pointer's selection moves. A snapshot belongs to this
@@ -732,8 +735,10 @@ export function getPolicyForPointer(
   pointer: EdgePointer,
   holdRefresh?: HoldRefresh,
 ): Promise<PolicyLookup> {
-  const policy = selectedPolicy(pointer);
-  return policy === undefined
-    ? getPolicy(env, runtime, pointer.policyId, holdRefresh)
-    : Promise.resolve({ kind: 'found', policy, source: 'exact' });
+  return inEdgeSpan(runtime, 'edge.policy', () => {
+    const policy = selectedPolicy(pointer);
+    return policy === undefined
+      ? lookupPolicy(env, runtime, pointer.policyId, holdRefresh)
+      : Promise.resolve({ kind: 'found', policy, source: 'exact' });
+  });
 }

@@ -39,9 +39,11 @@ import {
 import type { CspNonceMode } from '@stayingupwind/host/delivery';
 
 import type { EdgeGates, EdgeHost } from '../edge-host.ts';
+import type { EdgeRuntime } from '../edge-runtime.ts';
 import { buildPassthroughRequest } from '../forwarding.ts';
 import { documentGateKey } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import { stripEdgeHeaders } from '../request-context.ts';
 import { appendConfigured, setConfigured } from './configured-headers.ts';
 import {
@@ -53,7 +55,7 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { decodeNonceDocument, type DecodeNonceDocumentInput } from './gate-body-encoding.ts';
+import { decodeNonceDocument } from './gate-body-encoding.ts';
 import { askedByProbe, probeOf } from './gate-probe.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
@@ -150,7 +152,7 @@ export interface GateShellDirective {
 }
 
 /** What a request brings to its gate, once the deployment it is of is known to declare one. */
-export interface GateInput {
+export interface GateInput extends Pick<EdgeRuntime, 'tracing'> {
   readonly request: Request;
   readonly url: URL;
   readonly manifest: ProjectManifest;
@@ -454,7 +456,7 @@ async function gateAnswer(
   if (encoding === null || encoding.trim() === '') {
     return rewriteDocumentNonces(response, nonce);
   }
-  const decoded = await decodedNonceDocument({
+  const decoded = await decodeNonceDocument({
     response,
     gate,
     gates: input.host.gates,
@@ -647,7 +649,9 @@ async function throughGate(
   routed: (directive?: GateDirective) => Promise<Response>,
 ): Promise<Response> {
   const started = input.now?.() ?? 0;
-  const answer = await answeredAtGate(input, gate, { since: performance.now(), started });
+  const answer = await inEdgeSpan(input, 'edge.route_gate', () =>
+    answeredAtGate(input, gate, { since: performance.now(), started }),
+  );
   if (answer === undefined || !(answer instanceof Response)) {
     // A directive is a pass the edge acts on: the handler downstream counts the request, as a pass's,
     // and what it answers this visitor is kept from shared caches as a pass's answer is.
@@ -767,9 +771,4 @@ function unshared(response: Response): Response {
   const admitted = new Response(response.body, response);
   unsharedUnlessPublic(admitted.headers, false);
   return admitted;
-}
-
-/** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(input: DecodeNonceDocumentInput): Promise<Response | undefined> {
-  return decodeNonceDocument(input);
 }

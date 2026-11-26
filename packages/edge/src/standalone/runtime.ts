@@ -76,5 +76,6 @@ export function standaloneRuntime(
     transformImage: overrides.transformImage ?? imagesTransform(env.IMAGES),
     blobWorker: overrides.blobWorker ?? blobReader(env.BLOBS),
     reports: overrides.reports,
+    tracing: overrides.tracing,
   };
 }
