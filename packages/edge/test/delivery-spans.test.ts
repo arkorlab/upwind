@@ -65,7 +65,7 @@ describe('edge delivery spans', () => {
   it('counts both split dispatch attempts while the second is still waiting for headers', async () => {
     const names: string[] = [];
     const second = Promise.withResolvers<Response>();
-    const askedAgain = Promise.withResolvers<void>();
+    const askedAgain = Promise.withResolvers<undefined>();
     const runtime = standaloneRuntime(env, {
       tracing: recordSpans(names),
       dispatchApp: (script) => {
@@ -77,7 +77,7 @@ describe('edge delivery spans', () => {
             }),
           );
         }
-        askedAgain.resolve();
+        askedAgain.resolve(undefined);
         return second.promise;
       },
     });
@@ -98,7 +98,8 @@ describe('edge delivery spans', () => {
     } finally {
       second.resolve(answer);
     }
-    expect(await pending).toBe(answer);
+
+    await expect(pending).resolves.toBe(answer);
     expect(answer.bodyUsed).toBe(false);
   });
 });

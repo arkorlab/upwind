@@ -29,6 +29,7 @@ import { logWarn } from '../observability/logger.ts';
 import { inEdgeSpan } from '../observability/spans.ts';
 import { readManifestCopy } from './blobs.ts';
 import { checkManifestContentTypes } from './manifest-content-types.ts';
+import { selectedPolicy } from './selected-policy.ts';
 import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
 
 /** Each cold backend gets the same two seconds as an immutable blob or record read. */
@@ -721,27 +722,6 @@ async function lookupPolicy(
     return { kind: 'found', policy: cached.value, source: 'exact' };
   }
   return resolvePolicyFromKv(env, runtime, policyId, false);
-}
-
-/** Parsed once per immutable pointer object; never installed in the shared policy-id cache. */
-const selectedPolicies = new WeakMap<EdgePointer, DeliveryPolicy | null>();
-
-/** The exact policy copied by the publisher, or no usable hint. */
-function selectedPolicy(pointer: EdgePointer): DeliveryPolicy | undefined {
-  if (pointer.selectedPolicy === undefined) {
-    return undefined;
-  }
-  if (pointer.selectedPolicy === 'builtin') {
-    return builtinDeliveryPolicy(pointer.policyId);
-  }
-  const cached = selectedPolicies.get(pointer);
-  if (cached !== undefined) {
-    return cached ?? undefined;
-  }
-  const parsed = deliveryPolicySchema.safeParse(pointer.selectedPolicy);
-  const policy = parsed.success && parsed.data.id === pointer.policyId ? parsed.data : null;
-  selectedPolicies.set(pointer, policy);
-  return policy ?? undefined;
 }
 
 /**

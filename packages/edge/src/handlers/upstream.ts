@@ -78,10 +78,10 @@ export function fetchUpstream(
   const dispatch: DispatchApp =
     tracing === undefined
       ? dispatchApp
-      : (script, forwarded) =>
-          tracing.enterSpan(target?.continuation === true ? 'edge.resume' : 'edge.dispatch', () =>
-            dispatchApp.call(runtime, script, forwarded),
-          );
+      : (script, forwarded) => {
+          const operation = target?.continuation === true ? 'edge.resume' : 'edge.dispatch';
+          return tracing.enterSpan(operation, () => dispatchApp.call(runtime, script, forwarded));
+        };
   if (app.functions === undefined) {
     // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
     // eslint-disable-next-line sonarjs/no-try-promise

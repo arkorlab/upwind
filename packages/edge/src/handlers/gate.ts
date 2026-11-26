@@ -55,7 +55,7 @@ import {
   withoutPolicies,
 } from './csp-nonce.ts';
 import { applyCspReporting } from './csp-reporting-headers.ts';
-import { decodeNonceDocument, type DecodeNonceDocumentInput } from './gate-body-encoding.ts';
+import { decodeNonceDocument } from './gate-body-encoding.ts';
 import { askedByProbe, probeOf } from './gate-probe.ts';
 import { headerRulesAsRouted } from './middleware.ts';
 import {
@@ -456,7 +456,7 @@ async function gateAnswer(
   if (encoding === null || encoding.trim() === '') {
     return rewriteDocumentNonces(response, nonce);
   }
-  const decoded = await decodedNonceDocument({
+  const decoded = await decodeNonceDocument({
     response,
     gate,
     gates: input.host.gates,
@@ -771,9 +771,4 @@ function unshared(response: Response): Response {
   const admitted = new Response(response.body, response);
   unsharedUnlessPublic(admitted.headers, false);
   return admitted;
-}
-
-/** Content codings describe the input bytes and are removed once the gate's HTML is decoded. */
-function decodedNonceDocument(input: DecodeNonceDocumentInput): Promise<Response | undefined> {
-  return decodeNonceDocument(input);
 }
