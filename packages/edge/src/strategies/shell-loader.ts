@@ -13,6 +13,7 @@ import type {
 
 import { CacheBody } from '../cache/cache-body.ts';
 import { logWarn } from '../observability/logger.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import type { EdgeContext } from './context.ts';
 
 const ONE_YEAR_SECONDS = 31_536_000;
@@ -356,7 +357,15 @@ async function firstBytes(
  * A pre-compressed rendering of a shell is an artifact like any other and is loaded the same way,
  * under its own hash; every layer stores it as opaque bytes, never as an encoded response.
  */
-export async function loadShell(
+export function loadShell(
+  ref: ArtifactLocator,
+  strategy: ShellDeliveryStrategy<EdgeContext>,
+  ctx: EdgeContext,
+): Promise<ShellLoadResult> {
+  return inEdgeSpan(ctx.runtime, 'edge.shell', () => readShell(ref, strategy, ctx));
+}
+
+async function readShell(
   ref: ArtifactLocator,
   strategy: ShellDeliveryStrategy<EdgeContext>,
   ctx: EdgeContext,

@@ -112,6 +112,7 @@ export const resumeContinuation = {
       // The Worker the shell's route is in, for a deployment split across several.
       response: fetchUpstream(input.ctx.runtime, input.ctx.app, upstream, {
         function: input.entry.function,
+        continuation: true,
         scopeId: input.manifest.cache?.scopeId,
         logCorrelationId: input.ctx.forwarding.logCorrelationId,
       }),

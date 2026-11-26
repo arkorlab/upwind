@@ -31,6 +31,7 @@ import {
 import { type TransformImage, transformMode } from '../edge-runtime.ts';
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import type { EdgeContext } from '../strategies/context.ts';
 import { IMAGE_OPTIMIZER_HEADERS, layImageConfiguredUnder } from './configured-headers.ts';
 import { lookupCache, storeCache } from './image-cache.ts';
@@ -541,7 +542,11 @@ export function refuseImage(input: ImageAnswerInput, error: SourceError, reason:
   return refusal(input, error, reason);
 }
 
-export async function handleImage(input: ImageInput): Promise<Response> {
+export function handleImage(input: ImageInput): Promise<Response> {
+  return inEdgeSpan(input.edge.runtime, 'edge.image', () => optimizeImage(input));
+}
+
+async function optimizeImage(input: ImageInput): Promise<Response> {
   const { edge, params } = input;
   const startedAt = edge.runtime.now();
   const source = resolveImageSource(edge, input.manifest, params, input.dpl);

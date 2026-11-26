@@ -58,6 +58,8 @@ export interface EdgeRuntime {
   readonly fetchImpl: FetchImpl;
   readonly now: () => number;
   readonly memory: EdgeMemory;
+  /** Native Workers tracing for hosts that enable delivery spans. */
+  readonly tracing?: Pick<ExecutionContext['tracing'], 'enterSpan'> | undefined;
   /**
    * The deployment's Functions; `undefined` where the host has none to reach, and every request
    * that would go to one is answered `502` instead.

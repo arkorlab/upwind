@@ -65,6 +65,7 @@ export function gateInputOf(
       ? { mode: state.cspNonceMode, strictDynamic: state.cspStrictDynamic }
       : undefined,
     now: input.runtime.now,
+    tracing: input.runtime.tracing,
     documentGates: { memory: input.runtime.memory.documentGates, manifestId: state.manifestId },
     passed: input.gatePassed,
     terminal: (response, route, elapsed, dispatched): void => {

@@ -26,6 +26,7 @@ import { CacheBody, type RecordBytes } from '../cache/cache-body.ts';
 import type { EdgeRuntime } from '../edge-runtime.ts';
 import type { PolicyStandIn } from '../memory/caches.ts';
 import { logWarn } from '../observability/logger.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import { readManifestCopy } from './blobs.ts';
 import { checkManifestContentTypes } from './manifest-content-types.ts';
 import { boundedLookup, type HoldRefresh, type Lookup, MISSING } from './storage.ts';
@@ -454,11 +455,22 @@ async function readCopies(
   return { kv: fromKv, durable: fromDurable };
 }
 
-export async function getManifest(
+export function getManifest(
   env: EdgeBindings,
   runtime: EdgeRuntime,
   manifestId: string,
   options: ManifestOptions = {},
+): Promise<Lookup<ProjectManifest>> {
+  return inEdgeSpan(runtime, 'edge.manifest', () =>
+    lookupManifest(env, runtime, manifestId, options),
+  );
+}
+
+async function lookupManifest(
+  env: EdgeBindings,
+  runtime: EdgeRuntime,
+  manifestId: string,
+  options: ManifestOptions,
 ): Promise<Lookup<ProjectManifest>> {
   const holdAbsence = options.holdAbsence ?? true;
   const cached = held(runtime, manifestId);
@@ -676,7 +688,18 @@ function heldStandIn(
  * it is served immediately and KV runs in the background, so a hot shell is not first-byte behind
  * a 60 s TTL.
  */
-export async function getPolicy(
+export function getPolicy(
+  env: EdgeBindings,
+  runtime: EdgeRuntime,
+  policyId: string,
+  holdRefresh?: HoldRefresh,
+): Promise<PolicyLookup> {
+  return inEdgeSpan(runtime, 'edge.policy', () =>
+    lookupPolicy(env, runtime, policyId, holdRefresh),
+  );
+}
+
+async function lookupPolicy(
   env: EdgeBindings,
   runtime: EdgeRuntime,
   policyId: string,
@@ -732,8 +755,10 @@ export function getPolicyForPointer(
   pointer: EdgePointer,
   holdRefresh?: HoldRefresh,
 ): Promise<PolicyLookup> {
-  const policy = selectedPolicy(pointer);
-  return policy === undefined
-    ? getPolicy(env, runtime, pointer.policyId, holdRefresh)
-    : Promise.resolve({ kind: 'found', policy, source: 'exact' });
+  return inEdgeSpan(runtime, 'edge.policy', () => {
+    const policy = selectedPolicy(pointer);
+    return policy === undefined
+      ? lookupPolicy(env, runtime, pointer.policyId, holdRefresh)
+      : Promise.resolve({ kind: 'found', policy, source: 'exact' });
+  });
 }

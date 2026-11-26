@@ -25,6 +25,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 
 import { logWarn } from '../observability/logger.ts';
 import type { EdgeMetric } from '../observability/metrics.ts';
+import { inEdgeSpan } from '../observability/spans.ts';
 import {
   asksBlobWorker,
   type BlobRange,
@@ -411,7 +412,18 @@ function sliceStream(
  * that Worker is not bound or does not answer with them. Both stream, and nothing is copied on the
  * way: the cache that keeps a file is the blob Worker's.
  */
-async function readFile(
+function readFile(
+  edge: Pick<StaticFileContext, 'env' | 'runtime'>,
+  file: StaticFileEntry,
+  range: BlobRange | undefined,
+  progress?: FileReadProgress,
+): Promise<FileRead> {
+  return inEdgeSpan(edge.runtime, 'edge.static_file', () =>
+    readFileBytes(edge, file, range, progress),
+  );
+}
+
+async function readFileBytes(
   edge: Pick<StaticFileContext, 'env' | 'runtime'>,
   file: StaticFileEntry,
   range: BlobRange | undefined,

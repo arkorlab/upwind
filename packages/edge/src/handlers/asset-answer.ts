@@ -1,6 +1,7 @@
 import { releaseStream } from '@stayingupwind/core/util';
 import { withoutHostCredentials } from '@stayingupwind/host/credentials';
 
+import { inEdgeSpan } from '../observability/spans.ts';
 import { hasCredentials } from '../request-context.ts';
 import { type AssetInput, handleAsset } from './asset.ts';
 import { observeMetric } from './observer.ts';
@@ -36,7 +37,7 @@ export async function answerAsset(
       return unshared(0);
     }
   }
-  const asset = await handleAsset(input);
+  const asset = await inEdgeSpan(input.edge.runtime, 'edge.asset', () => handleAsset(input));
   if (asset.admitted) {
     return asset.response;
   }
