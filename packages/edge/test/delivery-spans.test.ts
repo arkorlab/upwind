@@ -12,9 +12,13 @@ import { htmlResponse, navigation, pprDocument, seedSite } from './helpers/site.
 
 function recordSpans(names: string[]): NonNullable<EdgeRuntime['tracing']> {
   return {
-    enterSpan(name, callback, ...args) {
+    enterSpan(name, callback) {
       names.push(name);
-      return tracing.enterSpan(name, callback, ...args);
+      return tracing.enterSpan(name, callback);
+    },
+    startActiveSpan(name, callback) {
+      names.push(name);
+      return tracing.startActiveSpan(name, callback);
     },
   };
 }

@@ -3,6 +3,7 @@ import { PatternBudgetExceededError } from '@stayingupwind/core/request';
 
 import { withScopeRevision } from '../cache/scope-signal.ts';
 import type { DispatchApp, EdgeRuntime } from '../edge-runtime.ts';
+import { inDispatchSpan } from '../observability/spans.ts';
 import { stampLogCorrelation } from '../request-context.ts';
 import { dispatchSplitApp, NoApplicationError, NoDispatchError, unsent } from './app-dispatch.ts';
 export {
@@ -80,7 +81,9 @@ export function fetchUpstream(
       ? dispatchApp
       : (script, forwarded) => {
           const operation = target?.continuation === true ? 'edge.resume' : 'edge.dispatch';
-          return tracing.enterSpan(operation, () => dispatchApp.call(runtime, script, forwarded));
+          return inDispatchSpan(tracing, operation, () =>
+            dispatchApp.call(runtime, script, forwarded),
+          );
         };
   if (app.functions === undefined) {
     // Catch only the synchronous call; awaiting or observing it would wrap its normal promise.
