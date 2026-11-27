@@ -150,7 +150,8 @@ describe('version 3 Pages manifest and representation routing', () => {
     }
 
     expect(READ_MANIFEST_SCHEMA_VERSIONS).toContain(8);
-    expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 9 }).success).toBe(false);
+    expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 9 }).success).toBe(true);
+    expect(projectManifestSchema.safeParse({ ...manifest, schemaVersion: 10 }).success).toBe(false);
   });
 
   it.each([false, true])(

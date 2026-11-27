@@ -48,6 +48,7 @@ export {
   headerRuleSchema,
   type ContinuationConfig,
   continuationConfigSchema,
+  COMPACT_TABLES_SCHEMA_VERSION,
   type DynamicRoute,
   dynamicRouteSchema,
   MANIFEST_SCHEMA_VERSION,
@@ -85,7 +86,7 @@ export {
   type StaticFileLocales,
 } from './schema.ts';
 export { spellsPrefixOf } from './spelled-prefix.ts';
-export { fromStoredManifest } from './stored.ts';
+export { compactManifestForStorage, fromStoredManifest } from './stored.ts';
 
 export { findRouteBody } from './route-bodies.ts';
 

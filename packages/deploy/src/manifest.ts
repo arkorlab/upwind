@@ -1,4 +1,4 @@
-import type { EncodedShellRef } from '@stayingupwind/core/artifact';
+import { type EncodedShellRef, sha256HexOfText } from '@stayingupwind/core/artifact';
 import {
   BuildPatternBudget,
   BuildPatternBudgetExceededError,
@@ -27,7 +27,7 @@ import {
   type AppRuntime,
   type BuildProjectManifestInput,
   buildProjectManifest,
-  computeManifestId,
+  compactManifestForStorage,
   MAX_MANIFEST_BYTES,
   type ProjectManifest,
   type RouteEntry,
@@ -125,20 +125,34 @@ function boundedBuildTags(manifest: ProjectManifest): ProjectManifest {
   return manifest;
 }
 
-export function fitBuildTags(manifest: ProjectManifest): {
+/** Try the smaller format only for publishers whose serving and rollback readers understand it. */
+function storedForPublication(manifest: ProjectManifest, compactManifestTables: boolean) {
+  if (compactManifestTables) {
+    const compact = compactManifestForStorage(manifest);
+    if (
+      compact !== undefined &&
+      oversizedManifest(compact.manifest, compact.serialized) === undefined
+    ) {
+      return compact;
+    }
+  }
+  return { manifest, serialized: serializeManifest(manifest) };
+}
+
+export function fitBuildTags(
+  manifest: ProjectManifest,
+  compactManifestTables = false,
+): {
   readonly manifest: ProjectManifest;
   readonly serialized: string;
 } {
   const bounded = boundedBuildTags(manifest);
-  const serialized = serializeManifest(bounded);
-  if (oversizedManifest(bounded, serialized) === undefined) {
-    return { manifest: bounded, serialized };
+  const stored = storedForPublication(bounded, compactManifestTables);
+  if (oversizedManifest(stored.manifest, stored.serialized) === undefined) {
+    return stored;
   }
   const fitted = withoutBuildTags(bounded);
-  return {
-    manifest: fitted,
-    serialized: fitted === bounded ? serialized : serializeManifest(fitted),
-  };
+  return fitted === bounded ? stored : storedForPublication(fitted, compactManifestTables);
 }
 
 /** A manifest as it is published, and whether its files' headers were left out to fit it. */
@@ -191,15 +205,18 @@ function withoutFileHeaders(manifest: ProjectManifest): ProjectManifest {
  * is never what refuses a deployment. One they would take past either budget is published as it
  * would have been without them, build tags and all, and says so (`leftOut`).
  */
-export function fitFileHeaders(built: ProjectManifest): FittedManifest {
+export function fitFileHeaders(
+  built: ProjectManifest,
+  compactManifestTables = false,
+): FittedManifest {
   if (built.staticFileHeaders !== true) {
-    return { ...fitBuildTags(built), leftOut: false };
+    return { ...fitBuildTags(built, compactManifestTables), leftOut: false };
   }
   const bounded = boundedBuildTags(built);
-  const serialized = serializeManifest(bounded);
-  return oversizedManifest(bounded, serialized) === undefined
-    ? { manifest: bounded, serialized, leftOut: false }
-    : { ...fitBuildTags(withoutFileHeaders(built)), leftOut: true };
+  const stored = storedForPublication(bounded, compactManifestTables);
+  return oversizedManifest(stored.manifest, stored.serialized) === undefined
+    ? { ...stored, leftOut: false }
+    : { ...fitBuildTags(withoutFileHeaders(built), compactManifestTables), leftOut: true };
 }
 
 /**
@@ -216,6 +233,8 @@ export function routedPages(runtimeCache: boolean | undefined): ServableOptions 
 }
 
 export interface AssembleManifestInput {
+  /** Opt into schema 9 when smaller, after the host's serving and rollback readers support it. */
+  readonly compactManifestTables?: boolean | undefined;
   readonly bundle: DeploymentBundle;
   /** The bundle of the deployment served just before this one, whose `_next/static` files stay. */
   readonly previous: DeploymentBundle | undefined;
@@ -505,7 +524,7 @@ async function assembleWithin(
     ...gatesOf(bundle),
     ...(cached && { cache: { keySchemaVersion: KEY_SCHEMA_VERSION, scopeId: input.deploymentId } }),
   });
-  const fitted = fitFileHeaders(built);
+  const fitted = fitFileHeaders(built, input.compactManifestTables);
   const { manifest, serialized } = fitted;
   const refused = oversizedManifest(manifest, serialized);
   if (refused !== undefined) {
@@ -514,7 +533,7 @@ async function assembleWithin(
   return {
     kind: 'assembled',
     manifest,
-    manifestId: await computeManifestId(manifest),
+    manifestId: await sha256HexOfText(serialized),
     serialized,
     routes: routes.map((route) => manifest.routes[route.pathname] ?? route),
     routing,

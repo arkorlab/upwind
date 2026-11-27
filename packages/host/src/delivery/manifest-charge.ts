@@ -1,4 +1,9 @@
-import type { ProjectManifest } from '@stayingupwind/core/manifest';
+import type { GenerationTag } from '@stayingupwind/core/cache';
+import {
+  COMPACT_TABLES_SCHEMA_VERSION,
+  type ProjectManifest,
+  type RouteSegment,
+} from '@stayingupwind/core/manifest';
 
 const KIB = 1024;
 const MIB = KIB * KIB;
@@ -26,6 +31,8 @@ export const EDGE_ISOLATE_BUDGET_BYTES = EDGE_ISOLATE_BUDGET_MIB * MIB;
  */
 const MANIFEST_JSON_FACTOR = 1.5;
 const MANIFEST_OBJECT_BYTES = 80;
+/** The retained pointer for every array position, including positions naming the same tag. */
+const ARRAY_SLOT_BYTES = 8;
 const FALLBACK_ENTRY_OBJECTS = 4;
 /**
  * Each pathname a split deployment names an app Function for (`exactFunctions`) is charged 48 bytes
@@ -38,7 +45,8 @@ const FALLBACK_ENTRY_OBJECTS = 4;
  * 174,800, just after the table grew: 29.4 MB held, charged 21.4 MB. An entry's JSON, 16 bytes
  * charged one and a half times, comes to 24 of those 72, and 48 covers the rest. At 80, as for an
  * entry of its own, each would be charged 104 bytes, more than any took, and a manifest of such
- * pathnames refused past some 207 thousand of them rather than 245 thousand.
+ * pathnames refused past some 207 thousand of them rather than 245 thousand. A compact route's
+ * segment map also keeps a keyed slot for every pathname that points to a shared descriptor.
  */
 const PATHNAME_TABLE_BYTES = 48;
 
@@ -127,15 +135,61 @@ function ruleObjects(
   return objects;
 }
 
-/** Each route and its build memberships, which storage does not intern. */
-function routeObjects(manifest: ProjectManifest): number {
-  let objects = 0;
-  for (const route of Object.values(manifest.routes)) {
-    // Build tags are not stored in an interned table. Even equal or shared input arrays become
-    // a separate array and separate tag objects for each route after JSON is read.
-    objects += 1 + listObjects(route.cache?.buildTags);
+/** A compact route keeps its own list and positions. Several positions can name one tag. */
+function tagListCharge(tags: readonly GenerationTag[], seen: WeakSet<GenerationTag>): number {
+  let bytes = MANIFEST_OBJECT_BYTES + ARRAY_SLOT_BYTES * tags.length;
+  for (const tag of tags) {
+    if (!seen.has(tag)) {
+      seen.add(tag);
+      bytes += MANIFEST_OBJECT_BYTES;
+    }
   }
-  return objects;
+  return bytes;
+}
+
+/** A route keeps a pathname map. Each distinct stored descriptor owns its artifact and encodings. */
+function segmentMapCharge(
+  segments: Readonly<Record<string, RouteSegment>>,
+  seen: WeakSet<RouteSegment>,
+): number {
+  let bytes = MANIFEST_OBJECT_BYTES;
+  for (const segment of Object.values(segments)) {
+    bytes += PATHNAME_TABLE_BYTES;
+    if (!seen.has(segment)) {
+      seen.add(segment);
+      // The descriptor and identity artifact; each optional encoding belongs to this descriptor.
+      bytes +=
+        MANIFEST_OBJECT_BYTES *
+        (2 + (segment.encodings === undefined ? 0 : 1 + keysOf(segment.encodings)));
+    }
+  }
+  return bytes;
+}
+
+/** Every route keeps its own entry. Earlier formats charge the build memberships inline. */
+function routeCharge(manifest: ProjectManifest): number {
+  const routes = Object.values(manifest.routes);
+  let bytes = MANIFEST_OBJECT_BYTES * routes.length;
+  if (manifest.schemaVersion !== COMPACT_TABLES_SCHEMA_VERSION) {
+    for (const route of routes) {
+      bytes += MANIFEST_OBJECT_BYTES * listObjects(route.cache?.buildTags);
+    }
+    return bytes;
+  }
+  let tags: WeakSet<GenerationTag> | undefined;
+  let segments: WeakSet<RouteSegment> | undefined;
+  for (const route of routes) {
+    const buildTags = route.cache?.buildTags;
+    if (buildTags !== undefined) {
+      tags ??= new WeakSet();
+      bytes += tagListCharge(buildTags, tags);
+    }
+    if (route.segments !== undefined) {
+      segments ??= new WeakSet();
+      bytes += segmentMapCharge(route.segments, segments);
+    }
+  }
+  return bytes;
 }
 
 /**
@@ -167,7 +221,7 @@ function fileHeaderObjects(manifest: ProjectManifest): number {
 }
 
 /**
- * The routes, files and pathnames a manifest lists, and the objects of its rules. A pathname found
+ * The files and pathnames a manifest lists, and the objects of its rules. A pathname found
  * to be of a gated route (`gatedPathnames`) is charged as an entry of its own: unlike one a split
  * deployment names a Function for, it may be a template no other table lists.
  */
@@ -198,7 +252,6 @@ function manifestObjects(manifest: ProjectManifest): number {
   }
   return (
     bodies +
-    routeObjects(manifest) +
     keysOf(manifest.staticFiles) +
     fileHeaderObjects(manifest) +
     keysOf(manifest.exactPathnames) +
@@ -224,6 +277,7 @@ function manifestObjects(manifest: ProjectManifest): number {
 export function manifestCharge(manifest: ProjectManifest, jsonBytes: number): number {
   return (
     MANIFEST_JSON_FACTOR * jsonBytes +
+    routeCharge(manifest) +
     MANIFEST_OBJECT_BYTES * manifestObjects(manifest) +
     PATHNAME_TABLE_BYTES * keysOf(manifest.exactFunctions)
   );

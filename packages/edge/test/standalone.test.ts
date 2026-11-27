@@ -1,9 +1,13 @@
+import { sha256HexOfText } from '@stayingupwind/core/artifact';
 import type { ImagesConfig } from '@stayingupwind/core/images';
+import { compactManifestForStorage, type RouteCache } from '@stayingupwind/core/manifest';
 import { concatBytes, encodeUtf8 } from '@stayingupwind/core/util';
+import { kvManifestKey } from '@stayingupwind/host/storage';
 import { createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import { describe, expect, it, vi } from 'vitest';
+import { assert, describe, expect, it, vi } from 'vitest';
 
+import { buildWasInvalidated } from '../src/cache/build-invalidated.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
 import type { IncomingRequest } from '../src/request-context.ts';
 import {
@@ -101,6 +105,62 @@ describe('a standalone edge', () => {
     expect(body).toBe(document.shellText + document.suffixText);
     expect(response.headers.get('x-arkor-edge')).toMatch(/^shell;/u);
     expect(response.headers.has('reporting-endpoints')).toBe(false);
+  });
+
+  it('uses one manifest read for a cold navigation and its subsequent segment prefetch', async () => {
+    const document = pprDocument();
+    const segment = '0:["shared layout"]\n';
+    const { manifest, pointer } = await seedSite({ document, segments: { '/_tree': segment } });
+    const root = manifest.routes['/'];
+    assert(root);
+    const cache: RouteCache = {
+      entryId: 'one',
+      kind: 'app-page',
+      delivery: 'complete',
+      buildTags: [{ kind: 'next-explicit', value: 'shared-layout-content' }],
+    };
+    const compact = compactManifestForStorage({
+      ...manifest,
+      routes: {
+        '/': root,
+        '/one': { ...root, pathname: '/one', cache },
+        '/two': { ...root, pathname: '/two', cache: { ...cache, entryId: 'two' } },
+      },
+    });
+    assert(compact);
+    const { serialized } = compact;
+    const manifestId = await sha256HexOfText(serialized);
+    const key = kvManifestKey(manifestId);
+    await env.EDGE_STATE.put(key, serialized);
+    const site = { ...env, POINTER: JSON.stringify({ ...pointer, manifestId }) };
+    const runtime = runtimeOf(site, () => htmlResponse(document.suffix));
+    const reads = vi.spyOn(env.EDGE_STATE, 'get');
+    try {
+      const html = await serve(site, navigation('/'), runtime);
+
+      expect(html.body).toBe(document.shellText + document.suffixText);
+
+      const request = navigation('/', {
+        headers: {
+          rsc: '1',
+          'next-router-prefetch': '1',
+          'next-router-segment-prefetch': '/_tree',
+        },
+      });
+      const prefetch = await serve(site, request, runtime);
+
+      expect(prefetch.body).toBe(segment);
+      expect(reads.mock.calls.filter(([name]) => String(name) === key)).toHaveLength(1);
+
+      const held = runtime.memory.manifests.get(manifestId);
+      assert(held);
+      runtime.memory.invalidations.takeResponse('scope', ['shared-layout-content'], 1);
+
+      expect(buildWasInvalidated(runtime.memory, 'scope', held.routes['/one']?.cache)).toBe(true);
+      expect(buildWasInvalidated(runtime.memory, 'scope', held.routes['/two']?.cache)).toBe(true);
+    } finally {
+      reads.mockRestore();
+    }
   });
 
   it('reads a pointer kept in EDGE_STATE under its key', async () => {

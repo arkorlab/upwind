@@ -142,6 +142,8 @@ export class DeployRefusalError extends Error {
 }
 
 export interface StageInput {
+  /** Opt into schema 9 when smaller, after the host's serving and rollback readers support it. */
+  readonly compactManifestTables?: boolean | undefined;
   readonly bundle: DeploymentBundle;
   /** The bundle as it was stored, which the deployment's fingerprint is the digest of. */
   readonly json: string;
@@ -429,6 +431,7 @@ export async function stageDeployment(
     preloads,
     recoverySource: input.recoverySource,
     runtimeCache: target.cache !== undefined,
+    compactManifestTables: input.compactManifestTables,
   });
   if (assembled.kind === 'refused') {
     throw new DeployRefusalError(assembled.reason, { code: 'bundle_invalid' });

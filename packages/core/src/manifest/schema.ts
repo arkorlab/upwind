@@ -46,6 +46,9 @@ const PAGES_FALLBACK_PRIVACY = 3;
  * fallback authority could serve a loading shell without generating its concrete member. Version-3
  * `staticPages` members require the same reader even without a loading table. Ordinary manifests
  * keep 6 or 7; earlier readers refuse the unsupported version.
+ *
+ * 9: the stored tables may also hold build tags and segment descriptors. Their references need
+ * a version-9 reader. The optional writer keeps the build's earlier format when it saves no bytes.
  */
 /** The unchanged writer version for manifests that use canonical static-file keys. */
 export const MANIFEST_SCHEMA_VERSION = 6;
@@ -53,6 +56,7 @@ export const MANIFEST_SCHEMA_VERSION = 6;
 export const REQUEST_FILE_KEYS_SCHEMA_VERSION = 7;
 /** Paired Pages members and loading classes require a reader that understands version three. */
 export const PAGES_FALLBACK_SCHEMA_VERSION = 8;
+export const COMPACT_TABLES_SCHEMA_VERSION = 9;
 /** The first version a manifest may store what its routes repeat in `tables` at (above). */
 export const TABLES_SCHEMA_VERSION = 6;
 /** The version before, which `routerReferences` was first published at. */
@@ -75,6 +79,7 @@ export const READ_MANIFEST_SCHEMA_VERSIONS = [
   ...CANONICAL_FILE_SCHEMA_VERSIONS,
   REQUEST_FILE_KEYS_SCHEMA_VERSION,
   PAGES_FALLBACK_SCHEMA_VERSION,
+  COMPACT_TABLES_SCHEMA_VERSION,
 ] as const;
 const HTTP_OK = 200;
 
@@ -794,7 +799,7 @@ export const projectManifestSchema = z.discriminatedUnion('schemaVersion', [
     }),
   z.object({
     ...manifestFields,
-    schemaVersion: z.literal(PAGES_FALLBACK_SCHEMA_VERSION),
+    schemaVersion: z.literal([PAGES_FALLBACK_SCHEMA_VERSION, COMPACT_TABLES_SCHEMA_VERSION]),
     ...projectFields,
     staticFileRequestKeys: z.literal(true).optional(),
   }),
