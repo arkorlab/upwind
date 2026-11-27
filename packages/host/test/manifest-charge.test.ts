@@ -1,11 +1,13 @@
 import {
   buildProjectManifest,
+  COMPACT_TABLES_SCHEMA_VERSION,
   type DynamicRoute,
   MAX_MANIFEST_BYTES,
   parseProjectManifest,
   type ProjectManifest,
   serializeManifest,
   type RouteEntry,
+  type RouteSegment,
 } from '@stayingupwind/core/manifest';
 import { encodeUtf8 } from '@stayingupwind/core/util';
 import { describe, expect, it } from 'vitest';
@@ -172,6 +174,111 @@ describe('the memory held by a manifest’s member routes', () => {
     ).toBe(shared);
     expect(manifestCharge(parsed, bytes) > EDGE_ISOLATE_BUDGET_BYTES).toBe(!shared);
     expect(manifestCharge(ordinary, ordinaryBytes)).toBeLessThan(EDGE_ISOLATE_BUDGET_BYTES);
+  });
+});
+
+const SEGMENT_ARTIFACT = {
+  sha256: 'd'.repeat(64),
+  byteLength: 12,
+  contentType: 'text/x-component',
+  encoding: 'identity' as const,
+};
+
+function encodedSegment(): RouteSegment {
+  return {
+    artifact: { ...SEGMENT_ARTIFACT },
+    encodings: {
+      br: { ...SEGMENT_ARTIFACT, encoding: 'br' },
+      gzip: { ...SEGMENT_ARTIFACT, encoding: 'gzip', crc32: 1 },
+    },
+  };
+}
+
+function compactRoute(pathname: string): RouteEntry {
+  return {
+    pathname,
+    status: 200,
+    shell: SEGMENT_ARTIFACT,
+    headers: {},
+    cache: { entryId: pathname, kind: 'app-page', delivery: 'complete' },
+  };
+}
+
+describe('the memory held by compact route tables', () => {
+  const plain = {
+    ...manifestOf([]),
+    schemaVersion: COMPACT_TABLES_SCHEMA_VERSION,
+    routes: { '/first': compactRoute('/first'), '/second': compactRoute('/second') },
+  } satisfies ProjectManifest;
+  const tag = { kind: 'next-explicit' as const, value: 'a-shared-cache-membership' };
+
+  it('charges each retained list slot and map slot even when every slot refers to one value', () => {
+    const routes = Object.fromEntries(
+      Object.entries(plain.routes).map(([name, route]) => {
+        return [
+          name,
+          {
+            ...route,
+            cache: { ...route.cache!, buildTags: [{ ...tag }, { ...tag }] },
+            segments: { '/layout': encodedSegment(), '/page': encodedSegment() },
+          },
+        ];
+      }),
+    );
+    const assembled = { ...plain, routes };
+    const stored = serializeManifest(assembled);
+    const parsed = parseProjectManifest(stored);
+    const first = parsed.routes['/first']!;
+    const second = parsed.routes['/second']!;
+
+    expect(first.cache?.buildTags).not.toBe(second.cache?.buildTags);
+    expect(first.cache?.buildTags?.[0]).toBe(second.cache?.buildTags?.[1]);
+    expect(first.segments).not.toBe(second.segments);
+    expect(first.segments?.['/layout']).toBe(second.segments?.['/page']);
+
+    const containersAndSlots = 4 * 80 + 4 * 8 + 4 * 48;
+    // A tag plus a descriptor, identity artifact, encodings map, and two encoded artifacts.
+    const sharedValues = 6 * 80;
+
+    expect(manifestCharge(parsed, 0) - manifestCharge(plain, 0)).toBe(
+      containersAndSlots + sharedValues,
+    );
+    expect(manifestCharge(assembled, 0) - manifestCharge(plain, 0)).toBe(
+      containersAndSlots + 4 * sharedValues,
+    );
+  });
+
+  it('charges an empty list and map on each route that stores them', () => {
+    const first = plain.routes['/first'];
+    const listed = {
+      ...plain,
+      routes: {
+        ...plain.routes,
+        '/first': { ...first, cache: { ...first.cache!, buildTags: [] }, segments: {} },
+      },
+    };
+
+    expect(manifestCharge(listed, 0) - manifestCharge(plain, 0)).toBe(2 * 80);
+  });
+
+  it.each([3, 4, 5, 6, 7, 8])('keeps the original charge for version %i', (schemaVersion) => {
+    const first = plain.routes['/first'];
+    const inline = {
+      ...plain,
+      schemaVersion,
+      ...(schemaVersion === 7 && { staticFileRequestKeys: true }),
+      routes: {
+        ...plain.routes,
+        '/first': {
+          ...first,
+          cache: { ...first.cache!, buildTags: [tag, tag] },
+          segments: { '/page': { artifact: SEGMENT_ARTIFACT } },
+        },
+      },
+    };
+    const stored = parseProjectManifest(JSON.stringify(inline));
+
+    expect(manifestCharge(stored, 0) - manifestCharge(plain, 0)).toBe(3 * 80);
   });
 });
 

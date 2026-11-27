@@ -1,6 +1,13 @@
 import { canonicalJson } from '../artifact/hash.ts';
+import { MAX_TAGS_PER_ENTRY } from '../cache/keys.ts';
 import { compareCodeUnits, encodeUtf8 } from '../util/bytes.ts';
-import { type ProjectManifest, type StaticFileEntry, TABLES_SCHEMA_VERSION } from './schema.ts';
+import { compactRouteTables } from './compact-tables.ts';
+import {
+  COMPACT_TABLES_SCHEMA_VERSION,
+  type ProjectManifest,
+  type StaticFileEntry,
+  TABLES_SCHEMA_VERSION,
+} from './schema.ts';
 
 /**
  * A manifest as it is stored: what a route repeats of every other, said once.
@@ -23,6 +30,8 @@ interface Tables {
   readonly headers: unknown[];
   readonly conditions: unknown[];
   readonly preloads: unknown[];
+  readonly buildTags?: unknown[];
+  readonly segments?: unknown[];
 }
 
 /** One table being written: each distinct value once, in the order first met. */
@@ -59,6 +68,44 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
   if (manifest.schemaVersion < TABLES_SCHEMA_VERSION) {
     return manifest;
   }
+  const compact =
+    manifest.schemaVersion === COMPACT_TABLES_SCHEMA_VERSION
+      ? compactRouteTables(manifest.routes)
+      : undefined;
+  return storedWithTables(manifest, compact);
+}
+
+/** A publish-time candidate; ordinary manifests keep their existing version and canonical bytes. */
+export function compactStoredManifest(
+  manifest: ProjectManifest,
+): Readonly<Record<string, unknown>> | undefined {
+  if (manifest.schemaVersion < TABLES_SCHEMA_VERSION) return undefined;
+  const compact = compactRouteTables(manifest.routes);
+  if (compact === undefined) return undefined;
+  return storedWithTables({ ...manifest, schemaVersion: COMPACT_TABLES_SCHEMA_VERSION }, compact);
+}
+
+/**
+ * The smaller version-nine representation of an already validated build, when sharing its tags
+ * or segments saves bytes. Return the decoded graph alongside the bytes so admission measures
+ * the same shared objects the edge will hold.
+ */
+export function compactManifestForStorage(
+  manifest: ProjectManifest,
+): { readonly manifest: ProjectManifest; readonly serialized: string } | undefined {
+  const stored = compactStoredManifest(manifest);
+  if (stored === undefined) return undefined;
+  const serialized = canonicalJson(stored);
+  // Inline copies may still share an object in the builder. Only stored references share
+  // one in the edge isolate, so reconstruct from the bytes for the admission calculation.
+  const decoded: unknown = JSON.parse(serialized);
+  return { manifest: fromStoredManifest(decoded) as ProjectManifest, serialized };
+}
+
+function storedWithTables(
+  manifest: ProjectManifest,
+  compact: ReturnType<typeof compactRouteTables>,
+): Readonly<Record<string, unknown>> {
   const headers = new TableWriter();
   const conditions = new TableWriter();
   const preloads = new TableWriter();
@@ -72,6 +119,7 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
       const stored = {
         ...entry,
         headers: headers.placeOf(entry.headers),
+        ...compact?.fields(entry),
         ...(entry.bypassFor !== undefined && { bypassFor: conditions.placeOf(entry.bypassFor) }),
         ...(entry.preloads !== undefined && { preloads: preloads.placeOf(entry.preloads) }),
       };
@@ -89,6 +137,7 @@ export function toStoredManifest(manifest: ProjectManifest): Readonly<Record<str
   const staticFiles = storedFiles(manifest, headers);
   const tables = {
     headers: headers.values,
+    ...compact?.tables,
     ...(conditions.values.length > 0 && { conditions: conditions.values }),
     ...(preloads.values.length > 0 && { preloads: preloads.values }),
   };
@@ -187,13 +236,61 @@ function placed(table: readonly unknown[], place: unknown, what: string): unknow
   return table[place];
 }
 
+/** Optional v9 tables contain only descriptors; table entries never refer to another entry. */
+function descriptorTable(stored: Stored, name: 'buildTags' | 'segments'): unknown[] | undefined {
+  const value = stored[name];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every(isRecord)) {
+    throw new Error(`a stored manifest's ${name} table must contain objects`);
+  }
+  return value;
+}
+
+/** Clone a route's list only if it actually names a place; a fully inline list stays as parsed. */
+function readCache(cache: unknown, table: readonly unknown[]): Stored | undefined {
+  if (!isRecord(cache) || cache['buildTags'] === undefined) return undefined;
+  const tags = cache['buildTags'];
+  if (!Array.isArray(tags) || tags.length > MAX_TAGS_PER_ENTRY) {
+    throw new Error('invalid stored buildTags list');
+  }
+  let restored: unknown[] | undefined;
+  for (const [index, tag] of (tags as unknown[]).entries()) {
+    if (isRecord(tag)) continue;
+    const found = placed(table, tag, 'buildTags');
+    restored ??= [...(tags as unknown[])];
+    restored[index] = found;
+  }
+  return restored === undefined ? undefined : { ...cache, buildTags: restored };
+}
+
+function readSegments(value: unknown, table: readonly unknown[]): Stored | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error('invalid stored segments map');
+  let restored: Stored | undefined;
+  for (const key in value) {
+    if (!Object.hasOwn(value, key)) continue;
+    const segment = value[key];
+    if (isRecord(segment)) continue;
+    const found = placed(table, segment, 'segments');
+    restored ??= { ...value };
+    restored[key] = found;
+  }
+  return restored;
+}
+
 /** A route as it is read: what it names by place, put back. */
 function readRoute(entry: unknown, tables: Tables): unknown {
   if (!isRecord(entry)) {
     return entry;
   }
+  const cache =
+    tables.buildTags === undefined ? undefined : readCache(entry['cache'], tables.buildTags);
+  const segments =
+    tables.segments === undefined ? undefined : readSegments(entry['segments'], tables.segments);
   return {
     ...entry,
+    ...(cache !== undefined && { cache }),
+    ...(segments !== undefined && { segments }),
     headers: placed(tables.headers, entry['headers'], 'headers'),
     ...(entry['bypassFor'] !== undefined && {
       bypassFor: placed(tables.conditions, entry['bypassFor'], 'conditions'),
@@ -256,6 +353,30 @@ function namesPlaces(version: unknown): boolean {
   return typeof version === 'number' && version >= TABLES_SCHEMA_VERSION;
 }
 
+function readTables(
+  stored: Stored,
+  version: unknown,
+  sharedInputs: WeakSet<WeakKey> | undefined,
+): Tables {
+  const tables: Tables = {
+    ...(version === COMPACT_TABLES_SCHEMA_VERSION && {
+      buildTags: descriptorTable(stored, 'buildTags') ?? [],
+      segments: descriptorTable(stored, 'segments') ?? [],
+    }),
+    headers: tableOf(stored, 'headers'),
+    conditions: tableOf(stored, 'conditions'),
+    preloads: tableOf(stored, 'preloads'),
+  };
+  if (sharedInputs !== undefined) {
+    for (const table of Object.values(tables) as unknown[][]) {
+      for (const value of table) {
+        if (typeof value === 'object' && value !== null) sharedInputs.add(value);
+      }
+    }
+  }
+  return tables;
+}
+
 /**
  * A stored manifest as it is read: what its routes name by place in `tables` put back, so a
  * manifest reads the same however it was stored. Every route sharing a value is handed the one
@@ -267,18 +388,7 @@ export function fromStoredManifest(parsed: unknown, sharedInputs?: WeakSet<WeakK
     return parsed;
   }
   const { tables: stored, ...manifest } = parsed;
-  const tables: Tables = {
-    headers: tableOf(stored, 'headers'),
-    conditions: tableOf(stored, 'conditions'),
-    preloads: tableOf(stored, 'preloads'),
-  };
-  if (sharedInputs !== undefined) {
-    for (const table of [tables.headers, tables.conditions, tables.preloads]) {
-      for (const value of table) {
-        if (typeof value === 'object' && value !== null) sharedInputs.add(value);
-      }
-    }
-  }
+  const tables = readTables(stored, manifest['schemaVersion'], sharedInputs);
   const listed = manifest['routes'];
   const routes = isRecord(listed)
     ? Object.fromEntries(

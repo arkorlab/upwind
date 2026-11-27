@@ -162,7 +162,7 @@ describe('a stored manifest', () => {
    * headers in turn. The versions are ones no reader reads — before the earliest still served, and
    * after the latest — named outright so that the case cannot become empty (greptile).
    */
-  it.each([1, 2, 9])('refuses version %i, which it does not read', (version) => {
+  it.each([1, 2, 10])('refuses version %i, which it does not read', (version) => {
     expect(READ_MANIFEST_SCHEMA_VERSIONS).not.toContain(version);
     expect(readsAt(version)).toBe(false);
   });

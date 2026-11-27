@@ -22,6 +22,11 @@ deployment came in, and assembles one it already holds or serves again, passes
 `nextVersionJudged: true`: the range moves with the adapter's, and a deployment admitted under an
 earlier range is then assembled as it was.
 
+Hosts can pass `compactManifestTables: true` to `assembleManifest`, `stageDeployment` or
+`deployBundle` once their serving and rollback readers support manifest schema 9. Repeated build
+tags and segment descriptors can then share entries inside the same manifest. A build that saves
+no bytes keeps its original schema version. Leaving the option unset keeps the earlier writer.
+
 The published package is TypeScript sources: `exports` names `.ts` files, and there is no build
 step. It runs as a Worker or under Node.
 
