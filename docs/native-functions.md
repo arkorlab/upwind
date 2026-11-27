@@ -44,7 +44,7 @@ is in a Pages Router route. Only the native loads are proved, by the same loader
 binary selection, ABI and digests as for any Node Function, and a Cloudflare platform import in the
 Function's own graph is refused. The shared-cache rewrites still apply; the instrumentation loader
 and the custom-cache guard are rewritten only over the reviewed bytes of the Next.js release the
-package is, 16.4.3, 16.4.4 or 16.4.5, and any other bytes at those paths are refused. The Turbopack selectors are left to the bootstrap's
+package is, 16.4.3, 16.4.4, 16.4.5 or 16.4.6, and any other bytes at those paths are refused. The Turbopack selectors are left to the bootstrap's
 `TURBOPACK`. Such an artifact does not have the manifest-consumer and closure proofs, the JWT,
 WebSocket and environment initialization guards, or an alias proof for packages that only server
 chunks load: a missing package link shows when the route runs, not at build. A distDir that would be
@@ -67,11 +67,12 @@ Node ABI and Linux x64 glibc target before publishing it. Worker loader hooks, p
 and native shims are not applied to Node files. The existing shared cache and request runtime is
 retained through a Node transport, rather than replaced with an independent `next start` cache.
 
-The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3, 16.4.4 and
-16.4.5. They publish the same reviewed sources but for the page template factory and the server
-runtimes, which are pinned for each release (`node-next-release.ts`), and a package holding another
-release's copy of one is refused; 16.4.5 publishes the Pages runtimes as 16.4.4 does. 16.4.4's and
-16.4.5's Turbopack runtime installs no leading strict factory table, which
+The original Next.js manifest consumers and Turbopack runtime target Next.js 16.4.3 to 16.4.6.
+They publish the same reviewed sources but for the page template factory and the server runtimes,
+which are pinned for each release (`node-next-release.ts`), and a package holding another release's
+copy of one is refused; 16.4.5 publishes the Pages runtimes as 16.4.4 does, and 16.4.6 the page
+template factory and the Pages runtimes as 16.4.5 does. The Turbopack runtime of 16.4.4 to 16.4.6
+installs no leading strict factory table, which
 16.4.3's chunks may carry, so a chunk with one beside that runtime is refused. Each release has its
 own reviewed getHandler references (`node-manifest-handler-catalog.ts`), with and without server
 minification. Changed compiler or template shapes are refused until their source contracts are
@@ -121,7 +122,7 @@ The default shared cache and rendering paths remain available. This policy does 
 missing dependency with a stub or allow unresolved application imports.
 
 The fixed Next.js JWT dependency has a separate, source-reviewed initialization profile for each
-release: Next.js 16.4.3 compiles in jsonwebtoken, and 16.4.4 and 16.4.5 the same fast-jwt. The
+release: Next.js 16.4.3 compiles in jsonwebtoken, and 16.4.4 to 16.4.6 the same fast-jwt. The
 jsonwebtoken profile permits only its exact global-recovery compiler site. The fast-jwt profile
 permits no compiler site and only one `process.binding("buffer")` read, in its copy of
 safer-buffer, behind a `!o.kStringMaxLength` check. Node.js 24 and 26 define
@@ -170,7 +171,7 @@ refuse artifacts they cannot execute. These errors preserve the application's ru
 The dedicated Linux CI control compiles and executes a real N-API binary, creates the actual adapter
 artifact, starts its Node HTTP entry, and checks that independent Worker and Edge routes remain on
 Workers. A separate CI step verifies the pinned, unchanged native fixture of each supported Next.js
-release, 16.4.3, 16.4.4 and 16.4.5. It builds the fixture with the actual adapter and invokes its
+release, 16.4.3 to 16.4.6. It builds the fixture with the actual adapter and invokes its
 emitted Node entry on loopback, including `/blog/second` with `fallback: true`. The unchanged App
 Router fixture `test/e2e/app-dir/turbopack-reports` is built and invoked the same way. Its pages are
 prerendered, so the control adds one page rendered for each request, and checks that a route left

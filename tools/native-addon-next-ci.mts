@@ -40,6 +40,7 @@ const NEXT_RELEASES: Readonly<Record<string, string>> = {
   '16.4.3': '29bbeab09981148ade186e8599ecdede15abc281',
   '16.4.4': 'b175f52b05a5f6c6c39ca72565ea178542be323b',
   '16.4.5': '4e5335a00314be7fbb2aace5e9be56a88e64e5a8',
+  '16.4.6': '54b876b6b161b0ecda19562eb264bec637e60d6d',
 };
 const NEXT_VERSION = process.env['UPWIND_NATIVE_NEXT'] ?? '16.4.3';
 const NEXT_COMMIT =

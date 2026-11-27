@@ -18,7 +18,7 @@ const INPUTS = new URL('../../../tools/native-pages-handler-profile/', import.me
 const DEFAULT_FIXTURE = '2527f3cdc79784d6a1fd003332682d651f2b1b3bce5859eb2731e4f71b7a12d4';
 const INTEGRITY = /(integrity: )sha512-[\w+/]+=*/u;
 /** The releases a run asks for by name. */
-const LATER = ['16.4.4', '16.4.5'] as const;
+const LATER = ['16.4.4', '16.4.5', '16.4.6'] as const;
 /** A lock entry of `next` or an `@next/*` package, and its release. */
 const RELEASE_ENTRY = /^ {2}"?(?:next|@next\/[\w-]+)@(\d+\.\d+\.\d+)[:"(]/u;
 /** Whether `owner` is the lock entry of `next` or an `@next/*` package at `version`. */
@@ -222,14 +222,15 @@ describe('fixed public Pages producer input selection without running the produc
     ['--server-minification=off', '--output=elsewhere'],
     ['--server-minification=off', '--next=16.4.4'],
     ['--next=16.4.3'],
-    ['--next=16.4.6'],
+    ['--next=16.4.7'],
     ['--next=16.4.4', '--next=16.4.4'],
     ['--next=16.4.5', '--next=16.4.4'],
+    ['--next=16.4.6', '--next=16.4.5'],
     ['/candidate/next.config.mjs'],
     ['--help'],
   ])('rejects an unknown or additional argument sequence %j', (...args) => {
     expect(() => pagesHandlerProfileInputs(args)).toThrow(
-      'Pass no arguments, or --next=16.4.4 or --next=16.4.5 and/or --server-minification=off in that order',
+      'Pass no arguments, or --next=16.4.4 or --next=16.4.5 or --next=16.4.6 and/or --server-minification=off in that order',
     );
   });
 
@@ -240,6 +241,8 @@ describe('fixed public Pages producer input selection without running the produc
     ['--next=16.4.4', '--server-minification=off'],
     ['--next=16.4.5'],
     ['--next=16.4.5', '--server-minification=off'],
+    ['--next=16.4.6'],
+    ['--next=16.4.6', '--server-minification=off'],
   ])('freezes the selected input plan %j', (...args) => {
     const profile = pagesHandlerProfileInputs(args);
 
