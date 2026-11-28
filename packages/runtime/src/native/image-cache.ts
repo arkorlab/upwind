@@ -598,7 +598,10 @@ export const openImageCache: ImageCacheOpener = (input) => {
     if (image !== undefined) {
       return { hit: answerFrom(input, image), keep: undefined };
     }
-    // As the edge keeps nothing a middleware had a say on: what it let one visitor have, none other has.
+    // Nothing a middleware had a say on is kept here: what it let one visitor have, none other has.
+    // The edge keeps such an image (`handlers/image.ts` there), its source asked for as an anonymous
+    // visitor would ask and its key holding what a middleware can change, and lays the middleware's
+    // say on each answer it gives from it; this target has not been brought to that yet.
     const keep = input.middlewareRan
       ? undefined
       : (made: KeptImage): void => {
