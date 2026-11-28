@@ -1915,6 +1915,103 @@ describe('dynamicRouting', () => {
   });
 });
 
+describe('split Function placement for internal afterFiles rewrites', () => {
+  const rewrite: Route = {
+    sourceRegex: String.raw`^/export(?:/(.+?))?\.txt$`,
+    destination: '/en/items/$1',
+  };
+  const bundle = partialFunctionBundle('', false);
+  const publication = (afterFiles: Route[], beforeFiles: Route[] = []): ProjectManifest =>
+    functionManifest({ ...bundle, routing: { ...bundle.routing, afterFiles, beforeFiles } });
+  const url = new URL('https://example.test/export/widget.txt?view=plain');
+  const headers = new Headers();
+
+  it('uses the rewritten destination only to select the first Function', () => {
+    const manifest = parseProjectManifest(serializeManifest(publication([rewrite])));
+
+    expect(functionFor(manifest, url, headers)).toBe('app-2');
+    expect(url.pathname).toBe('/export/widget.txt');
+    expect(url.search).toBe('?view=plain');
+    expect(isReserved(manifest, url, headers, false)).toBe(true);
+    expect(
+      functionFor(publication([{ ...rewrite, destination: '/ja/items/fixed' }]), url, headers),
+    ).toBe('app-2');
+    expect(functionFor(manifest, url, headers, 'POST')).toBeUndefined();
+  });
+
+  it.each(['/export.txt', '/export/...txt', '/export/%2e%2e.txt', '/export/a%2Fb.txt'])(
+    'leaves ambiguous captures to the Function for %s',
+    (path) => {
+      expect(functionFor(publication([rewrite]), new URL(path, url), headers)).toBeUndefined();
+    },
+  );
+
+  it('keeps source precedence and defers to the runtime for conflicting destinations', () => {
+    const page = partialFunctionBundle('', false);
+    const exact = ['/export/widget.txt', '/en/items/special'].map((pathname) => {
+      return {
+        id: pathname,
+        pathname,
+        kind: 'app-page' as const,
+        function: 'app-3',
+      };
+    });
+    const manifest = functionManifest({
+      ...page,
+      entrypoints: [...page.entrypoints, ...exact],
+      routing: { ...page.routing, afterFiles: [rewrite] },
+    });
+
+    expect(functionFor(manifest, url, headers)).toBe('app-3');
+    expect(functionFor(manifest, new URL('/export/special.txt', url), headers)).toBeUndefined();
+  });
+
+  it('honors earlier rules and middleware before predicting a destination', () => {
+    const conditional = { ...rewrite, has: [{ type: 'header' as const, key: 'x-alias' }] };
+    const manifest = publication([conditional, rewrite]);
+
+    expect(functionFor(manifest, url, new Headers({ 'x-alias': 'override' }))).toBeUndefined();
+    expect(functionFor(manifest, url, headers)).toBe('app-2');
+    expect(functionFor(publication([rewrite], [rewrite]), url, headers)).toBeUndefined();
+    expect(
+      functionFor(
+        {
+          ...manifest,
+          middleware: { matchers: [{ sourceRegex: '^/export/' }] },
+        },
+        url,
+        headers,
+      ),
+    ).toBeUndefined();
+  });
+
+  it.each(['https://other.example/file', '//other.example/file', '/x?path=$1', '/x/$2', '/x/../y'])(
+    'does not publish unsupported destination %s',
+    (destination) => {
+      const manifest = publication([{ ...rewrite, destination }]);
+
+      expect(manifest.reservedRoutes?.[0]?.dispatchDestination).toBeUndefined();
+      expect(functionFor(manifest, url, headers)).toBeUndefined();
+    },
+  );
+
+  it('keeps older publications and unsplit builds on their existing paths', () => {
+    const manifest = publication([rewrite]);
+    const old = { ...manifest, reservedRoutes: [{ sourceRegex: rewrite.sourceRegex }] };
+
+    expect(functionFor(old, url, headers)).toBeUndefined();
+
+    const single = fixtureBundle();
+    const unsplit = functionManifest({
+      ...single,
+      routing: { ...single.routing, afterFiles: [rewrite] },
+    });
+
+    expect(unsplit.reservedRoutes).toContainEqual({ sourceRegex: rewrite.sourceRegex });
+    expect(functionFor(unsplit, url, headers)).toBe('app');
+  });
+});
+
 const KIB = 1024;
 const MAX_WORKER_FILE_BYTES = 256 * KIB;
 

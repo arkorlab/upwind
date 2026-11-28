@@ -662,7 +662,8 @@ async function forwardPassthrough(input: PassthroughInput, signal: AbortSignal):
   }
   // Read off the request as the Worker is handed it: the middleware's URL and headers, where the
   // edge ran it, and the forwarding headers.
-  const fn = input.function ?? functionOfRequest(input.app, input.manifest, originRequest);
+  const fn =
+    input.function ?? functionOfRequest(input.app, input.manifest, originRequest, input.reason);
   const startedAt = input.runtime.now();
   const pending = fetchUpstream(input.runtime, input.app, originRequest, {
     function: fn,

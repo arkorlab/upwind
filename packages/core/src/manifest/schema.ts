@@ -1,5 +1,6 @@
 import { artifactRefSchema, sha256HexSchema, shellEncodingsSchema } from '../artifact/artifact.ts';
 import {
+  rootRewriteHintSchema,
   routeGatesSchema,
   routeHasSchema,
   routerReferencesSchema,
@@ -516,6 +517,8 @@ export type DynamicRoute = z.infer<typeof dynamicRouteSchema>;
  */
 const reservedRouteSchema = middlewareMatcherSchema.extend({
   beforeFiles: z.literal(true).optional(),
+  /** An internal afterFiles destination used only to select the first split Function to ask. */
+  dispatchDestination: z.string().startsWith('/').optional(),
 });
 export type ReservedRoute = z.infer<typeof reservedRouteSchema>;
 /** Pathnames Next.js resolves exactly, ahead of its dynamic routes, that hold no shell. */
@@ -628,6 +631,8 @@ const projectFields = {
   pagesFallbacks: z.record(z.string().startsWith('/'), pagesFallbackEntrySchema).optional(),
   /** The application's middleware matchers: a document these match is not served without it. */
   middleware: middlewareConfigSchema.optional(),
+  /** A concrete, resumable document the build proved for a speculative root rewrite read. */
+  rootRewriteHint: rootRewriteHintSchema.optional(),
   /**
    * The application's dynamic routes in Next.js's own order, so a pathname no exact route names
    * can still be served the shell of the class it belongs to — and only when Next.js itself

@@ -183,6 +183,41 @@ describe('readProjectConfig', () => {
     });
   });
 
+  it('reads a root rewrite hint only from the project or host configuration', async () => {
+    const hint = { rootRewriteHint: '/welcome/' };
+    for (const file of ['upwind.json', 'host.json']) {
+      await expect(readProjectConfig(projectWith(file, hint), EARLIER)).resolves.toStrictEqual({
+        file,
+        crons: [],
+        ...hint,
+      });
+    }
+
+    await expect(readProjectConfig(projectWith('vercel.json', hint))).resolves.toStrictEqual({
+      file: 'vercel.json',
+      crons: [],
+    });
+  });
+
+  it.each([
+    '/',
+    'welcome',
+    '//site.example/welcome',
+    '/welcome?lang=x',
+    '/welcome#section',
+    '/[language]',
+    '/:language',
+    '/items/*',
+    '/a/../b',
+    '/a/%2e/b',
+    '/a//b',
+    '/bad%ZZ',
+  ])('refuses an ambiguous root rewrite hint %s', async (rootRewriteHint) => {
+    const dir = projectWith('upwind.json', { rootRewriteHint });
+
+    await expect(readProjectConfig(dir)).rejects.toThrow(/upwind\.json: rootRewriteHint/u);
+  });
+
   it('reads an upwind.jsonc with the comments and trailing commas the name promises', async () => {
     const dir = await projectDir({
       'upwind.jsonc': `{

@@ -12,6 +12,7 @@ import { sourceRegexSchema } from '../util/regex-source.ts';
 import { forEachBlob } from './blob-references.ts';
 import { blobRefSchema } from './blob.ts';
 import {
+  rootRewriteHintSchema,
   routeGatesSchema,
   routeHasSchema,
   routerReferencesSchema,
@@ -518,6 +519,8 @@ const bundleSchema = z.object({
    * this field existed.
    */
   crons: cronsSchema.optional(),
+  /** An optional destination to read while the root request's middleware runs. */
+  rootRewriteHint: rootRewriteHintSchema.optional(),
   /**
    * The routes the build declares a gate for, each with the name of its gate (`ROUTE_GATES_ENV`):
    * the edge asks the gate a host binds under that name about each request of the route before it

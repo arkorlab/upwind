@@ -1,7 +1,7 @@
 import { compiledRules, patternOf } from '../request/compiled-patterns.ts';
 import { testWithin } from '../request/pattern-budget.ts';
 import { builtNameOf } from './built-names.ts';
-import type { DynamicRoute, ProjectManifest } from './schema.ts';
+import type { DynamicRoute, ProjectManifest, RouteEntry } from './schema.ts';
 import { spellsPrefixOf } from './spelled-prefix.ts';
 
 /**
@@ -125,4 +125,30 @@ function memberKey(
     return pathname;
   }
   return other !== undefined && Object.hasOwn(record, other) ? other : undefined;
+}
+
+/**
+ * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
+ * the request spelled it and then as Next.js finds the page it asks for (`pageKeyOf`). A route is
+ * named by the spelling a request asks for it by — behind the slash, for an application that
+ * keeps its pages there — so the other spelling finds nothing, and is Next.js's to redirect.
+ */
+export function findRouteEntry(
+  manifest: ProjectManifest,
+  pathname: string,
+): RouteEntry | undefined {
+  const named =
+    manifest.routeBodies === undefined && manifest.staticPages === undefined
+      ? manifest.routes
+      : manifest.exactPathnames;
+  const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
+  return key === undefined ? undefined : manifest.routes[key];
+}
+
+/** The concrete, proved page configured as the likely destination of middleware at the root. */
+export function rootRewriteEntry(manifest: ProjectManifest): RouteEntry | undefined {
+  const pathname = manifest.rootRewriteHint;
+  if (pathname === undefined || !Object.hasOwn(manifest.routes, pathname)) return undefined;
+  const entry = manifest.routes[pathname];
+  return entry?.pathname === pathname ? entry : undefined;
 }

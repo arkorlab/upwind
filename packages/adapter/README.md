@@ -189,7 +189,15 @@ means deciding which file wins a key neither meant to share.
 | ----------------- | ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `crons[]`         | `crons`                  | Vercel's dialect, at build time: a path, and a five-field UTC expression (`@stayingupwind/core/cron`)                                                                             |
 | `functions.split` | (how the bundle is made) | `false`, `true`, or `{ maxMiB?, maxCodeMiB? }`, which can only tighten the host's budgets (below). Never read from `vercel.json`, where `functions` is Vercel's per-file settings |
+| `rootRewriteHint` | `rootRewriteHint`        | A single concrete non-root pathname in the project’s own configuration, such as `/welcome`                                                                                        |
 | anything else     | —                        | ignored, so a `vercel.json` full of Vercel's own deployment configuration is not read twice, differently                                                                          |
+
+When middleware commonly rewrites `/` to a partially prerendered page, set
+`"rootRewriteHint": "/welcome"` in `upwind.json` to let the edge prepare that page while
+middleware runs. The pathname must match the published page exactly, including any base path or
+trailing slash. A concrete page generated from a dynamic route qualifies. Publication omits the
+hint if this build has no resumable page at that pathname. Middleware still chooses the response
+on each request, including redirects and rewrites to other pages.
 
 An `upwind.config.ts` is evaluated by Node itself — type stripping, no build step, erasable syntax
 only — and may export a function, so what a project declares can be computed. A file that will not

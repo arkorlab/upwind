@@ -399,6 +399,18 @@ function manifestPrerendersOf(
   return [...prerenders];
 }
 
+/** Publish only a final served pathname whose build supplied a resumable shell. A concrete member
+ * can qualify even when its source route is dynamic. */
+function rootRewriteFor(
+  pathname: string | undefined,
+  routes: readonly RouteEntry[],
+  resumable: ReadonlySet<string>,
+): Pick<BuildProjectManifestInput, 'rootRewriteHint'> {
+  if (pathname === undefined) return {};
+  const id = routes.find((entry) => entry.pathname === pathname)?.prerenderId;
+  return id !== undefined && resumable.has(id) ? { rootRewriteHint: pathname } : {};
+}
+
 /**
  * Assemble the manifest from the build: one entry per edge-servable prerender.
  *
@@ -499,6 +511,7 @@ async function assembleWithin(
     staticFiles,
     ...(middlewareMatchers !== undefined && { middleware: { matchers: middlewareMatchers } }),
     ...routing,
+    ...rootRewriteFor(bundle.rootRewriteHint, routes, resumable),
     ...(headerRules.length > 0 && { headerRules }),
     ...(foldedHeaderRules !== undefined && { foldedHeaderRules }),
     // How the deployment's Functions fill a header's `$` references, which is how the edge fills

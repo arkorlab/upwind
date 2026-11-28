@@ -1,17 +1,23 @@
-import type { ProjectManifest, RouteEntry } from '@stayingupwind/core/manifest';
+import {
+  type ProjectManifest,
+  rootRewriteEntry,
+  type RouteEntry,
+} from '@stayingupwind/core/manifest';
 import {
   BYPASS_COOKIE_NAMES,
   bypassForHolds,
   hasBypassCookie,
+  PREFETCH_HINT_HEADERS,
   RSC_HEADER,
 } from '@stayingupwind/core/request';
 import { type HostCredentials, withoutHostCredentials } from '@stayingupwind/host/credentials';
 import { runtimeCacheOf } from '@stayingupwind/host/delivery';
 
 import type { GenerationKey } from '../cache/generation-loader.ts';
-import { routeSuspectKey } from '../memory/caches.ts';
+import { type RewriteSeen, rewriteSeenKey, routeSuspectKey } from '../memory/caches.ts';
 import { isDemoted } from '../preview/pointer.ts';
 import type { EdgeContext } from '../strategies/context.ts';
+import type { HostedDocumentInput } from './hosted-document.ts';
 import { handedHeaders, type MiddlewareContinued, type MiddlewareOutcome } from './middleware.ts';
 import { readsCredentials, readsForwarding } from './routing-headers.ts';
 
@@ -125,6 +131,36 @@ export function offTheEdge(
   }
   const key = routeSuspectKey(edge.projectId, edge.manifestId, entry.pathname);
   return edge.runtime.memory.suspects.get(key) === true ? 'suspect' : undefined;
+}
+
+/** A cold root can overlap one record read with middleware, which still decides what is served. */
+export function rootHintTarget(
+  input: HostedDocumentInput,
+  seen: RewriteSeen | undefined,
+): { readonly entry: RouteEntry; readonly pathname: string; readonly guessed: true } | undefined {
+  const { manifest, classification, request, edge } = input;
+  if (
+    seen !== undefined ||
+    manifest.rootRewriteHint === undefined ||
+    input.url.pathname !== '/' ||
+    classification.kind !== 'passthrough' ||
+    classification.reason !== 'route-not-proved' ||
+    request.method !== 'GET' ||
+    request.headers.get('sec-fetch-dest') !== 'document' ||
+    request.headers.get('sec-fetch-mode') !== 'navigate' ||
+    PREFETCH_HINT_HEADERS.some((header) => request.headers.has(header))
+  )
+    return undefined;
+
+  const entry = rootRewriteEntry(manifest);
+  if (entry === undefined || offTheEdge(edge, entry) !== undefined) return undefined;
+  if (generationKeyOf(input, entry) === undefined) return undefined;
+  // Claim before starting the read. Even if middleware redirects every visitor, concurrent and
+  // subsequent requests share the same bound as a learned rewrite (one memo lifetime).
+  edge.runtime.memory.rewritesSeen.set(rewriteSeenKey(edge.manifestId, '/'), {
+    kind: 'hint-attempted',
+  });
+  return { entry, pathname: entry.pathname, guessed: true };
 }
 
 /** Fixed cookie names, matched only at a Set-Cookie boundary, including after an Expires comma. */

@@ -19,13 +19,8 @@ import {
 } from './configured-headers.ts';
 import { findRouteEntry, namesNoFile, withoutAssetPrefix } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
-import type {
-  DynamicRoute,
-  MemberRoute,
-  ProjectManifest,
-  ReservedRoute,
-  RouteEntry,
-} from './schema.ts';
+import { pathIsReserved } from './reserved.ts';
+import type { DynamicRoute, MemberRoute, ProjectManifest, RouteEntry } from './schema.ts';
 
 /**
  * Serving a dynamic route's shell to a pathname no exact route names.
@@ -68,7 +63,7 @@ export function withTrailingSlash(pathname: string): string {
  * that does not decode: Next.js answers a route parameter that does not with 400, not with the
  * class's shell, and the Function is what answers it so.
  */
-function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean {
+export function isCanonicalPathname(pathname: string, trailingSlash: boolean): boolean {
   if (pathname === '/') {
     return true;
   }
@@ -349,7 +344,16 @@ export function dynamicRouteFor(
   if (isReserved(manifest, url, headers, false)) {
     return undefined;
   }
-  const cased = routedPatterns(manifest.dynamicRoutes, url, headers)?.cased;
+  return casedDynamicRouteFor(manifest.dynamicRoutes, url, headers);
+}
+
+/** The case-sensitive class, once the reader has handled earlier rules and exact paths. */
+export function casedDynamicRouteFor(
+  routes: readonly DynamicRoute[],
+  url: URL,
+  headers: Headers,
+): DynamicRoute | undefined {
+  const cased = routedPatterns(routes, url, headers)?.cased;
   // `/POSTS/a` is `/posts/[slug]`'s to the router, and none of `/[category]/[slug]`'s, which its
   // spelling matches.
   return cased !== undefined && patternMatches(cased, url.pathname) ? cased.rule : undefined;
@@ -373,31 +377,6 @@ export function routedDynamicRouteFor(
     return undefined;
   }
   return routedPatterns(manifest.dynamicRoutes, url, headers)?.routed.rule;
-}
-
-/**
- * Whether a redirect or a rewrite from `next.config` claims a pathname before the edge could:
- * before the dynamic routes, or — `beforeFilesOnly` — before the filesystem, which is what a
- * shipped file's path has to clear.
- *
- * Taken on the rules alone, so a host can ask the same question of a build it is
- * about to publish as the edge asks of the manifest it publishes: a document the edge will not
- * serve from storage must not be validated as though it would.
- */
-export function pathIsReserved(
-  reserved: readonly ReservedRoute[],
-  url: URL,
-  headers: Headers,
-  beforeFilesOnly: boolean,
-): boolean {
-  return compiledRules(reserved, 'i').some((compiled) => {
-    const { rule } = compiled;
-    return (
-      (!beforeFilesOnly || rule.beforeFiles === true) &&
-      patternMatches(compiled, url.pathname) &&
-      conditionsHold(rule, url, headers)
-    );
-  });
 }
 
 /**
@@ -465,6 +444,7 @@ export function isExactPathname(manifest: ProjectManifest, pathname: string): bo
 }
 
 export type { ConfiguredHeaders, RequestHeaderRules } from './configured-headers.ts';
+export { pathIsReserved } from './reserved.ts';
 
 // eslint-disable-next-line max-params -- optional mirroring and policy sources reuse the same interpolation loop
 function applyHeaderSet(

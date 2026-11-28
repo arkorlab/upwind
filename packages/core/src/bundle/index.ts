@@ -59,6 +59,7 @@ export {
 } from './schema.ts';
 export {
   gateNameSchema,
+  rootRewriteHintSchema,
   type RouteGates,
   routeGatesSchema,
   type RouteHas,

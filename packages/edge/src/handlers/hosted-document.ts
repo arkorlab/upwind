@@ -41,6 +41,7 @@ import {
   middlewareRequestsFlight,
   offTheEdge,
   requestAsLeft,
+  rootHintTarget,
 } from './hosted-route.ts';
 import { serveHostedFile, shippedFileAt } from './hosted-static-file.ts';
 import {
@@ -385,7 +386,7 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   // out is let go, and that read stays useful for the next request that lands on the route. A
   // `HEAD` reads nothing ahead, and nor does a route already off the edge, demoted or suspect
   // (`preloadTarget`).
-  const target = preloadTarget(input, seen);
+  const target = preloadTarget(input, seen) ?? rootHintTarget(input, seen);
   const preload = target === undefined ? undefined : preloadFor(input, target);
   const accounted =
     preload === undefined || (preload.kind === 'generation' && preload.read.shell === undefined)

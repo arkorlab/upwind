@@ -1,4 +1,4 @@
-export { negotiateContentEncoding } from './accept.ts';
+export { acceptsHtml, negotiateContentEncoding } from './accept.ts';
 export { hasRouteBodyControlHeader } from './route-bodies.ts';
 export {
   bypassForHolds,
