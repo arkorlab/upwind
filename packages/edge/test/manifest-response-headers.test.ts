@@ -13,6 +13,7 @@ import { assert, describe, expect, it, vi } from 'vitest';
 
 import { replayedDocumentHeaders } from '../src/handlers/document-headers.ts';
 import { createEdgeMemory } from '../src/memory/caches.ts';
+import { checkManifestContentTypes } from '../src/preview/manifest-content-types.ts';
 import { getManifest } from '../src/preview/manifest.ts';
 import { serveFromPointer } from '../src/route.ts';
 import { standaloneHost, standaloneRuntime } from '../src/standalone/index.ts';
@@ -92,9 +93,54 @@ async function fileWithType(contentType: string) {
   return { site, manifest };
 }
 
+it('enumerates each distinct route header map once per manifest validation', () => {
+  const manifest = manifestWith({}, undefined);
+  const route = manifest.routes['/'];
+  assert(route !== undefined);
+  const sharedKeys = vi.fn(Reflect.ownKeys);
+  const separateKeys = vi.fn(Reflect.ownKeys);
+  const headers = { [CSP]: "default-src 'self'" };
+  const shared = new Proxy(headers, { ownKeys: sharedKeys });
+  const separate = new Proxy({ ...headers }, { ownKeys: separateKeys });
+  const subject = {
+    ...manifest,
+    routes: {
+      '/': { ...route, headers: shared },
+      '/other': { ...route, pathname: '/other', headers: separate },
+      '/again': { ...route, pathname: '/again', headers: shared },
+    },
+  };
+
+  checkManifestContentTypes(subject);
+  expect(sharedKeys).toHaveBeenCalledTimes(1);
+  expect(separateKeys).toHaveBeenCalledTimes(1);
+
+  checkManifestContentTypes(subject);
+  expect(sharedKeys).toHaveBeenCalledTimes(2);
+  expect(separateKeys).toHaveBeenCalledTimes(2);
+});
+
 describe.each(['schema', 'digest'] as const)(
   'stored response headers through %s decode',
   (mode) => {
+    it.each(['headers', 'shell'] as const)('rejects invalid %s on a later route', async (field) => {
+      const manifest = manifestWith({ [CSP]: "default-src 'self'" }, undefined);
+      const other = manifest.routes['/other'];
+      assert(other !== undefined);
+      const changed =
+        field === 'headers'
+          ? { ...other, headers: { [CSP]: 'default-src self;\nbroken' } }
+          : { ...other, shell: { ...other.shell, contentType: 'text/html;\nbroken' } };
+      const subject = await coldRead(
+        { ...manifest, routes: { ...manifest.routes, '/other': changed } },
+        mode,
+      );
+
+      expect(subject.result.kind).toBe('missing');
+      expect(subject.memory.manifests.get(subject.manifestId)).toBeUndefined();
+      expect(subject.memory.absentManifests.get(subject.manifestId)).toBe(true);
+    });
+
     it.each([
       { field: 'image', label: 'image CR', value: 'default-src self;\rbroken' },
       { field: 'image', label: 'image LF', value: 'default-src self;\nbroken' },
