@@ -73,7 +73,7 @@ catalog:
   tldts: 7.5.2
   wrangler: 4.161.0
   typescript: 6.0.3
-  typescript-eslint: 8.72.2
+  typescript-eslint: 8.74.0
   # The suites of the packages that have them, run by one root runner (`vitest.config.ts`), and the
   # lint rules they are held to beside the rest.
   # Keep the runner used to qualify the workerd suites; runner upgrades need full pool coverage.
