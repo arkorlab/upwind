@@ -93,31 +93,35 @@ async function fileWithType(contentType: string) {
   return { site, manifest };
 }
 
-it('enumerates each distinct route header map once per manifest validation', () => {
-  const manifest = manifestWith({}, undefined);
-  const route = manifest.routes['/'];
-  assert(route !== undefined);
-  const sharedKeys = vi.fn(Reflect.ownKeys);
-  const separateKeys = vi.fn(Reflect.ownKeys);
-  const headers = { [CSP]: "default-src 'self'" };
-  const shared = new Proxy<typeof headers>(headers, { ownKeys: sharedKeys });
-  const separate = new Proxy<typeof headers>({ ...headers }, { ownKeys: separateKeys });
-  const subject = {
-    ...manifest,
-    routes: {
-      '/': { ...route, headers: shared },
-      '/other': { ...route, pathname: '/other', headers: separate },
-      '/again': { ...route, pathname: '/again', headers: shared },
-    },
-  };
+describe('manifest response header validation', () => {
+  it('enumerates each distinct route header map once per validation', () => {
+    const manifest = manifestWith({}, undefined);
+    const route = manifest.routes['/'];
+    assert(route !== undefined);
+    const sharedKeys = vi.fn(Reflect.ownKeys);
+    const separateKeys = vi.fn(Reflect.ownKeys);
+    const headers = { [CSP]: "default-src 'self'" };
+    const shared = new Proxy<typeof headers>(headers, { ownKeys: sharedKeys });
+    const separate = new Proxy<typeof headers>({ ...headers }, { ownKeys: separateKeys });
+    const subject = {
+      ...manifest,
+      routes: {
+        '/': { ...route, headers: shared },
+        '/other': { ...route, pathname: '/other', headers: separate },
+        '/again': { ...route, pathname: '/again', headers: shared },
+      },
+    };
 
-  checkManifestContentTypes(subject);
-  expect(sharedKeys).toHaveBeenCalledTimes(1);
-  expect(separateKeys).toHaveBeenCalledTimes(1);
+    checkManifestContentTypes(subject);
 
-  checkManifestContentTypes(subject);
-  expect(sharedKeys).toHaveBeenCalledTimes(2);
-  expect(separateKeys).toHaveBeenCalledTimes(2);
+    expect(sharedKeys).toHaveBeenCalledTimes(1);
+    expect(separateKeys).toHaveBeenCalledTimes(1);
+
+    checkManifestContentTypes(subject);
+
+    expect(sharedKeys).toHaveBeenCalledTimes(2);
+    expect(separateKeys).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe.each(['schema', 'digest'] as const)(
