@@ -435,10 +435,15 @@ async function serve(
   });
 }
 
-/** Independent version-three routing; old Pages capabilities keep their existing serving path. */
+/**
+ * Independent version-three routing; old Pages capabilities keep their existing serving path. A
+ * request a matcher of the middleware covers is the Function's whatever the middleware decides, as
+ * a static page's is (`routeHostedStaticPage`), and is handed on before the middleware runs.
+ */
 export function routeHostedFallbackPage(input: FallbackPageInput): Promise<Response> {
   if (input.request.method !== 'GET') return input.passthrough('static-page-head');
   return serveAfterMiddleware(input, {
+    handOn: () => input.passthrough(PRIVATE_PAGE),
     overBudget: (middleware, _dispatches, configured) => {
       return input.passthrough(
         PATTERN_BUDGET,

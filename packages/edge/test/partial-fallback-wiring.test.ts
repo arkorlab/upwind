@@ -89,14 +89,14 @@ const ENTRY: RouteEntry = {
   bypassFor: [{ type: 'header', key: 'next-action' }],
 };
 
-async function record(stale = false): Promise<ArrayBuffer> {
+async function record(stale = false, partial = true): Promise<ArrayBuffer> {
   const { entryId } = await deriveEntry(SCOPE, {
     kind: 'app-page',
     route: ROUTE,
     pathname: '/two',
   });
   const html = new TextEncoder().encode('completed two');
-  const postponed = new TextEncoder().encode('resume two');
+  const postponed = partial ? new TextEncoder().encode('resume two') : undefined;
   return new Uint8Array(
     encodeGenerationPack(
       {
@@ -118,8 +118,8 @@ async function record(stale = false): Promise<ArrayBuffer> {
         tags: [],
         htmlSha256: await sha256Hex(html),
         htmlLength: html.byteLength,
-        postponedSha256: await sha256Hex(postponed),
-        postponedLength: postponed.byteLength,
+        postponedSha256: postponed === undefined ? null : await sha256Hex(postponed),
+        postponedLength: postponed?.byteLength ?? 0,
         artifacts: [
           {
             artifactId: 'rsc_two',
@@ -564,6 +564,52 @@ describe('partial fallback document and router wiring', () => {
 
     await expect(missing.text()).resolves.toBe('function');
     expect(test.kv).not.toHaveBeenCalled();
+
+    await test.drain();
+  });
+
+  // A navigation asks for the whole Flight, which a completion held whole answers whatever the
+  // policy: the request is not handed on before the middleware as a member of a class the policy
+  // reads no member's own record of would be (`payloadAhead`), though the route holds a record.
+  it('runs the middleware for a navigation’s Flight of a member, and answers the completed one at the edge', async () => {
+    const entry: RouteEntry = {
+      ...ENTRY,
+      cache: { entryId: 'class-entry', kind: 'app-page', delivery: 'resume' },
+    };
+    const test = fixture(vi.fn().mockResolvedValue(await record(false, false)), entry);
+    await routeHostedDocument(test.input());
+
+    await test.drain();
+
+    const navigation = (pathname: string) => {
+      const input = test.input(pathname, { headers: { rsc: '1' } });
+      vi.mocked(middlewareMatches).mockReturnValueOnce(true);
+      vi.mocked(runMiddleware).mockResolvedValueOnce({
+        kind: 'continue',
+        url: input.url,
+        rewritten: false,
+        requestHeaders: input.request.headers,
+        responseHeaders: new Headers(),
+        setCookie: undefined,
+        middlewareMs: 0,
+      });
+      return routeHostedDocument({ ...input, classification: { kind: 'rsc-payload', entry } });
+    };
+    const completed = await navigation('/two');
+
+    await expect(completed.text()).resolves.toBe('c'.repeat(64));
+    expect(test.passthrough).not.toHaveBeenCalled();
+
+    const other = await navigation('/three');
+
+    await expect(other.text()).resolves.toBe('function');
+    expect(vi.mocked(runMiddleware)).toHaveBeenCalledTimes(2);
+    expect(test.passthrough).toHaveBeenLastCalledWith(
+      'rsc-payload',
+      expect.objectContaining({ kind: 'continue' }),
+      ROUTE,
+      undefined,
+    );
 
     await test.drain();
   });

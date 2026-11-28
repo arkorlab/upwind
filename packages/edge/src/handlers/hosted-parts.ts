@@ -18,6 +18,7 @@ import { releaseStream } from '@stayingupwind/core/util';
 import {
   type ResolvedPolicy,
   runtimeCacheOf,
+  type RuntimeCacheSettings,
   type ShellDeliveryStrategy,
 } from '@stayingupwind/host/delivery';
 
@@ -147,6 +148,26 @@ function partialPartGeneration(
   return undefined;
 }
 
+/** Whether `pathname` is a member of the class `entry` is the shell of, rather than the class. */
+export function memberOfClass(entry: RouteEntry, pathname: string): boolean {
+  return entry.pathname.includes('[') && entry.pathname !== pathname;
+}
+
+/**
+ * Whether a page's whole payload, asked for at `pathname`, is a member's the class `entry` cannot
+ * answer: a class record does not prove the Flight of a concrete member, and the policy reads no
+ * member's own record (`concreteUpgrade`). Judged on the pathname the middleware left, once it ran
+ * (`partGeneration`), and on the request's own before it, for a request handed on without running
+ * it (`payload-ahead.ts`).
+ */
+export function memberFlightUnproved(
+  settings: RuntimeCacheSettings,
+  entry: RouteEntry,
+  pathname: string,
+): boolean {
+  return !settings.concreteUpgrade && memberOfClass(entry, pathname);
+}
+
 async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartGeneration> {
   const partial = partialPartGeneration(input, part);
   if (partial !== undefined) return partial;
@@ -155,9 +176,9 @@ async function partGeneration(input: PartInput, part: PartAnswer): Promise<PartG
   if (key === undefined) return { kind: 'build' };
   const settings = runtimeCacheOf(input.edge.policy);
   // A class record does not prove the Flight of a concrete member. Without a selected member
-  // record or the policy that reads one, leave that request to the Function.
-  const member = entry.pathname.includes('[') && entry.pathname !== pathname;
-  if (kind === 'payload' && held === undefined && member && !settings.concreteUpgrade) {
+  // record or the policy that reads one, leave that request to the Function — before the
+  // middleware runs, where the request's own URL already names such a member (`payload-ahead.ts`).
+  if (kind === 'payload' && held === undefined && memberFlightUnproved(settings, entry, pathname)) {
     return { kind: 'function' };
   }
   lookAtScopeBehind(input.edge, key.scopeId);
@@ -205,6 +226,24 @@ function partFrom(
     return { kind: 'function' };
   }
   return { kind: 'runtime', pack: decision.pack, validity: decision.validity, member };
+}
+
+/**
+ * What answering a payload from `pack`, the record this isolate holds of its page, would have set
+ * off behind the response, set off for one handed on before the middleware ran instead
+ * (`payload-ahead.ts`): a record that asks for its regeneration — past its expiry, or a stale
+ * build's — is read again a second on (`partFrom`), so that what the regeneration publishes reaches
+ * the requests after it.
+ */
+export function readHeldPartAgain(input: PartInput, pack: DecodedGenerationPack): void {
+  const decision = decideGeneration(
+    { kind: 'generation', pack, source: 'memory', lookupMs: 0 },
+    input.edge.runtime.now(),
+    condemnedIn(input.edge.runtime.memory, input.edge.app?.deploymentId),
+  );
+  if (decision.kind !== 'build') {
+    partFrom(input, decision, undefined);
+  }
 }
 
 /** What a request of the router is answered with, once it is known to be answered here. */
@@ -391,7 +430,9 @@ async function answerPart(input: PartInput, part: PartAnswer): Promise<Response>
     return answerBuildPart(input, part, fallback, generation);
   }
   // Saved partial Flight is a static prefetch. Navigations and runtime prefetches need
-  // the Function's visitor render, which resumes from its current generation's state.
+  // the Function's visitor render, which resumes from its current generation's state — handed on
+  // before the middleware runs, where the record this isolate holds, or the build's word for a page
+  // it holds none of, already says so (`payload-ahead.ts`).
   if (
     kind === 'payload' &&
     generation.pack.header.postponedSha256 !== null &&

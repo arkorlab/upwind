@@ -1,3 +1,4 @@
+import { kvGenerationKey } from '@stayingupwind/core/cache';
 import { isReserved, type RouteEntry } from '@stayingupwind/core/manifest';
 import type { MiddlewareResult } from '@stayingupwind/core/paas';
 import {
@@ -12,6 +13,7 @@ import {
   NEXT_DATA_HEADER,
   NEXT_RESUME_HEADER,
   NEXT_RESUME_STATE_LENGTH_HEADER,
+  NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   parseCookieHeader,
   RSC_CACHE_BUSTING_QUERY,
@@ -88,10 +90,16 @@ export const APPLICATIONS =
  * What the edge says of a part it handed on only once the middleware covering the request ran
  * (`routeHostedDocument`): for want of the part, or of a route, or for its route's `bypassFor`, or
  * as its route is off the edge. Any other it hands on before, and the Function runs the middleware
- * itself — a page's props among them (`pages-data`).
+ * itself — a page's props among them (`pages-data`), and a page's whole payload only the Function
+ * renders (`rsc-payload-ahead`).
  */
 const HANDED_ON_PAST_MIDDLEWARE =
   /^passthrough;reason=(?:segment-prefetch|rsc-payload|bypass-for|demoted|suspect)(?:;|$)/u;
+/**
+ * What the edge says of a page's whole payload it handed on before the middleware covering the
+ * request ran, as one it could only have handed on after it (`payload-ahead.ts` in the edge).
+ */
+const PAYLOAD_AHEAD = 'rsc-payload-ahead';
 
 /** What the edge says of a request it handed on for want of a route: a navigation's alone. */
 const UNPROVED = /^passthrough;reason=route-not-proved(?:;|$)/u;
@@ -135,8 +143,9 @@ const TURNED_AWAY: Readonly<Record<string, string>> = {
 /**
  * Why the edge hands each kind of part on, as its account says, each a reason it gives one
  * (`hosted-parts.ts`, `hosted-document.ts`, `classifyRequest` in the edge): for want of the part or
- * of a route (`segment-prefetch`, `rsc-payload`, `pages-data`); a router's request it turns away
- * (`TURNED_AWAY`) or takes for no part (`rsc`, `next-internal`, `generalHandoffFailure`); the
+ * of a route (`segment-prefetch`, `rsc-payload`, `pages-data`); a page's whole payload only the
+ * Function renders, before the middleware ran (`rsc-payload-ahead`); a router's request it turns
+ * away (`TURNED_AWAY`) or takes for no part (`rsc`, `next-internal`, `generalHandoffFailure`); the
  * middleware failing, which a page's props it hands on ahead of; its route's `bypassFor`, its route
  * off the edge, or a pattern too costly to run (`ANY_PART_HANDOFFS`).
  */
@@ -147,7 +156,7 @@ const HANDOFFS: Readonly<Record<PartKind, ReadonlySet<string>>> = {
     ...Object.keys(TURNED_AWAY),
     ...ANY_PART_HANDOFFS,
   ]),
-  payload: new Set([MIDDLEWARE_FAILED, 'rsc', 'rsc-payload', ...ANY_PART_HANDOFFS]),
+  payload: new Set([MIDDLEWARE_FAILED, PAYLOAD_AHEAD, 'rsc', 'rsc-payload', ...ANY_PART_HANDOFFS]),
   data: new Set(['next-internal', 'pages-data', ...ANY_PART_HANDOFFS]),
 };
 
@@ -291,6 +300,9 @@ function generalHandoffFailure(
     case 'pages-data': {
       return unheldHandoffFailure(stack, part, read);
     }
+    case PAYLOAD_AHEAD: {
+      return aheadHandoffFailure(stack, part, { ...read, classified: asked });
+    }
     case 'rsc': {
       const generic =
         (route.payload === undefined &&
@@ -402,6 +414,91 @@ function unheldHandoffFailure(stack: CheckedStack, part: Part, read: HandedOn): 
     return undefined;
   }
   return 'for want of the part, though the build wrote it for the route the request is on, which the edge answers from what the build wrote alone';
+}
+
+/** How a part handed on before the middleware ran is said to have been, in a verdict's words. */
+const BEFORE_MIDDLEWARE = 'before the middleware ran';
+
+/**
+ * Whether a generation of `route`'s record the stack's edge read for the request holds the state a
+ * resume finishes (`RecordedGeneration.partial`): the record it held, which it judged a payload by
+ * without serving from it (`payload-ahead.ts` in the edge), or one it read behind the request.
+ */
+function readResumable(stack: CheckedStack, route: RouteEntry): boolean {
+  const scopeId = stack.manifest.cache?.scopeId;
+  const entryId = route.cache?.entryId;
+  if (scopeId === undefined || entryId === undefined || stack.generationEvidence === undefined) {
+    return false;
+  }
+  const prefix = `${kvGenerationKey(scopeId, entryId)}|`;
+  return [...stack.generationEvidence].some(
+    ([at, generation]) => at.startsWith(prefix) && generation.partial,
+  );
+}
+
+/** What `aheadHandoffFailure` reads of a payload handed on before the middleware ran. */
+interface HandedOnAhead {
+  readonly decided: KeptMiddlewareResult | undefined;
+  readonly covered: boolean;
+  /** The headers the edge classified the request on (`classifiedReads`). */
+  readonly classified: Headers;
+}
+
+/**
+ * Why a page's whole payload handed on before the middleware ran (`rsc-payload-ahead`) should not
+ * have been, as the edge judges one (`payload-ahead.ts`): no matcher of the build covers it, so no
+ * middleware was to run; the stack kept what the middleware decided, so the edge ran it after all;
+ * the edge answers its route's parts from what the build wrote, or from its partial fallback's
+ * completions; or it is neither a member of a class whose record proves no member's Flight, under a
+ * policy that reads no member's own, nor a page whose record holds a resume (`resumedFailure`).
+ */
+function aheadHandoffFailure(
+  stack: CheckedStack,
+  part: Part,
+  read: HandedOnAhead,
+): string | undefined {
+  const { route, url } = part;
+  if (!read.covered) {
+    return `${BEFORE_MIDDLEWARE}, though no matcher of the build covers the request`;
+  }
+  if (read.decided !== undefined) {
+    return `${BEFORE_MIDDLEWARE}, though the stack kept what the middleware decided for it`;
+  }
+  if (route.partialFallback !== undefined || !generationsServed(stack, route)) {
+    return `${BEFORE_MIDDLEWARE}, though the edge answers its route's parts from what the build wrote, or from its partial fallback's completions`;
+  }
+  const member = route.pathname.includes('[') && route.pathname !== url.pathname;
+  if (!member) {
+    return resumedFailure(stack, route, read);
+  }
+  return runtimeCacheOf(stack.policy).concreteUpgrade
+    ? `${BEFORE_MIDDLEWARE}, though the policy reads the member's own record, which the edge may answer it from`
+    : undefined;
+}
+
+/**
+ * Why a page's whole payload handed on before the middleware ran is not one only the Function
+ * renders: the build wrote it; the policy holds no record, so the edge judges one only once it read
+ * it; it is asked for as a static prefetch, which saved partial Flight answers; or the build finished
+ * the page, and no generation of its record the edge read holds a resume (`readResumable`).
+ */
+function resumedFailure(
+  stack: CheckedStack,
+  route: RouteEntry,
+  read: HandedOnAhead,
+): string | undefined {
+  if (route.payload !== undefined) {
+    return `${BEFORE_MIDDLEWARE}, though the build wrote the page's payload, which the edge answers it with`;
+  }
+  if (runtimeCacheOf(stack.policy).holdMs === 0) {
+    return `${BEFORE_MIDDLEWARE}, though the policy holds no record, which the edge judges a payload by only once it read it`;
+  }
+  if (read.classified.get(NEXT_ROUTER_PREFETCH_HEADER) === '1') {
+    return `${BEFORE_MIDDLEWARE}, though it is a static prefetch, which saved partial Flight answers`;
+  }
+  return route.cache?.delivery === 'resume' || readResumable(stack, route)
+    ? undefined
+    : `${BEFORE_MIDDLEWARE}, though the build finished the page, and no generation of its record the edge read holds a resume`;
 }
 
 /**

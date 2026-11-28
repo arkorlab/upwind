@@ -55,6 +55,7 @@ import {
 } from './middleware.ts';
 import { abandonShellRead, withShellAccounting } from './observer.ts';
 import { PATTERN_BUDGET, type PassthroughWait, passthroughReason } from './passthrough.ts';
+import { payloadAhead } from './payload-ahead.ts';
 
 export interface HostedDocumentInput {
   /** Header rules already selected on the original request, before middleware could change it. */
@@ -358,6 +359,12 @@ function memberFor(
  * lands on one. What the middleware answers outright — a redirect, a whole response — goes to the
  * client as it is; what it cannot decide, or fails to, goes to the application's Worker, which
  * runs the middleware itself and serves the whole document.
+ *
+ * A request the edge could only hand to the Worker whatever the middleware decides goes to it
+ * before the middleware runs, which the Worker then runs itself: one dispatch where running it here
+ * first would make two in series: a page's props, whose middleware's answer the edge does not
+ * reproduce; and a page's whole payload that only the Function renders (`payloadAhead`) — a route
+ * with no payload to serve is not run past the middleware at the edge for nothing.
  */
 export async function routeHostedDocument(input: HostedDocumentInput): Promise<Response> {
   const { request, url, edge, manifest } = input;
@@ -375,6 +382,14 @@ export async function routeHostedDocument(input: HostedDocumentInput): Promise<R
   // a middleware holds no props for the edge (`routePagesData`); this keeps it so for one that did.
   if (input.classification.kind === PAGES_DATA) {
     return input.passthrough(PAGES_DATA);
+  }
+  // Nor does a request for a page's whole payload that the edge could only hand on once the
+  // middleware ran: a member of a class whose record proves no member's Flight, or a page whose
+  // record holds a resume, asked for other than as a static prefetch (`payloadAhead`). Ahead of the
+  // rules too, which the Function judges itself on a request it runs the middleware for.
+  const ahead = payloadAhead(input);
+  if (ahead !== undefined) {
+    return ahead;
   }
   const headerRules = judgeHeaderRulesAhead(edge, manifest, url, request.headers);
   const seen = rewriteSeen(input);

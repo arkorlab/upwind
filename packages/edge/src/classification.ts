@@ -52,8 +52,14 @@ export function servedAtEdge(classification: RequestClass): boolean {
       return true;
     }
     case 'rsc-payload': {
-      // Taken by the route its own URL names, which holds a payload to answer with: the middleware
-      // may still put the request on another route, as it may a prefetch's (`routeHostedDocument`).
+      // Taken by the route its own URL names, which holds a payload to answer with — the build's,
+      // or one a record rendered since may hold: the middleware may still put the request on
+      // another route, as it may a prefetch's (`routeHostedDocument`). A request the edge could
+      // only hand on to the Function whatever the middleware decides is handed on before the
+      // middleware runs, and the Function runs the middleware itself (`payloadAhead`): a member of
+      // a class whose record proves no member's Flight, or a page whose record holds a resume,
+      // asked for other than as a static prefetch. A route with no payload to serve is not run past
+      // the middleware at the edge for nothing.
       return true;
     }
     case 'pages-data': {

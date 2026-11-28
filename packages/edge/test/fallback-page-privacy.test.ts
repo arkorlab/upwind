@@ -108,25 +108,25 @@ describe('pages fallback privacy and protocol fences', () => {
     expect(test.dispatch).not.toHaveBeenCalled();
   });
 
-  it('keeps an actual middleware decision private without dispatching the application or reading a generation', async () => {
-    const test = await fallbackEdgeFixture({ middleware: true });
-    const generation = vi.spyOn(test.edge.runtime.memory.generations, 'get');
+  it.each([BUILT_PATH, LAZY_PATH, DATA])(
+    'hands a request its middleware covers to the Function before the middleware runs, reading no generation: %s',
+    async (pathname) => {
+      const test = await fallbackEdgeFixture({ middleware: true });
+      const generation = vi.spyOn(test.edge.runtime.memory.generations, 'get');
 
-    test.dispatch.mockResolvedValueOnce(
-      new Response(null, { headers: { 'x-middleware-next': '1' } }),
-    );
+      const response = await test.serve({ pathname });
 
-    const response = await test.serve();
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+      expect(generation).not.toHaveBeenCalled();
+      // No dispatch of the middleware's: the Function runs it itself, and nothing is said it ran.
+      expect(test.dispatch).not.toHaveBeenCalled();
+      expect(test.fallback).toHaveBeenCalledTimes(1);
+      expect(test.fallback).toHaveBeenCalledWith('static-page-private');
+      expect(test.currentRecord).not.toHaveBeenCalled();
 
-    expect(response.headers.get('cache-control')).toBe('private, no-store');
-    expect(generation).not.toHaveBeenCalled();
-    expect(test.dispatch.mock.calls.map(([script]) => script)).toStrictEqual([
-      'fallback-middleware',
-    ]);
-    expect(test.currentRecord).not.toHaveBeenCalled();
-
-    await waitOnExecutionContext(test.edge.ctx);
-  });
+      await waitOnExecutionContext(test.edge.ctx);
+    },
+  );
 
   it('leaves a bot to the Function before exposing an initial loading shell', async () => {
     const test = await fallbackEdgeFixture();

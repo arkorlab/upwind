@@ -35,6 +35,8 @@ export interface StaticPageInput extends HostedGateInput {
 }
 
 const HTTP_OK = 200;
+/** Why a static page goes to the Function: what it would be served depends on the visitor. */
+const PRIVATE_PAGE = 'static-page-private';
 const CACHE_CONTROL = 'cache-control';
 const CONTENT_TYPE = 'content-type';
 const ENTITY_HEADERS: ReadonlySet<string> = new Set([
@@ -96,13 +98,14 @@ async function servePage(
   const { edge, manifest } = input;
   const middleware =
     decided === undefined ? undefined : withJudgedRules(decided, configured, manifest);
-  // A middleware's decision is visitor-specific; shared HTML cannot depend on that decision.
+  // A middleware's decision is visitor-specific; shared HTML cannot depend on that decision. A
+  // request a matcher covers is handed on before the middleware runs (`routeHostedStaticPage`).
   if (
     middleware !== undefined ||
     !requestAllowsSharing(input) ||
     !configuredAllowsSharing(configured)
   ) {
-    return input.passthrough('static-page-private', middleware);
+    return input.passthrough(PRIVATE_PAGE, middleware);
   }
   const classification = classifyRequest({
     method: input.request.method,
@@ -250,11 +253,17 @@ export function serveCurrentPage(
   return response;
 }
 
-/** Reuse the existing routing gate and current-record read, with no HTML rewriting or new RPC. */
+/**
+ * Reuse the existing routing gate and current-record read, with no HTML rewriting or new RPC. A
+ * request a matcher of the middleware covers is the Function's whatever the middleware decides —
+ * shared HTML cannot depend on a visitor's decision (`servePage`) — and is handed on before the
+ * middleware runs, which the Function runs itself: its answer, its redirect, its rewrite.
+ */
 export function routeHostedStaticPage(input: StaticPageInput): Promise<Response> {
   // The initial capability proves a GET representation. HEAD keeps its existing Function path.
   if (input.request.method === 'HEAD') return input.passthrough('static-page-head');
   return serveAfterMiddleware(input, {
+    handOn: () => input.passthrough(PRIVATE_PAGE),
     overBudget: (middleware, _dispatches, configured) => {
       return input.passthrough(
         PATTERN_BUDGET,

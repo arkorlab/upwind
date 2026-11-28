@@ -263,6 +263,25 @@ describe('generation evidence kept by the local edge Worker', () => {
     expect(evidence.snapshot('trace')).toStrictEqual({});
   });
 
+  it('captures a record the edge only looked at, which keeps its place in the cache', () => {
+    const evidence = new GenerationEvidence(256);
+    const memory = memoryFor(2048);
+    const firstKey = kvGenerationKey(SCOPE, 'entry_first');
+    memory.set(firstKey, heldPacket('entry_first', 2), 1024);
+    memory.set(kvGenerationKey(SCOPE, 'entry_second'), heldPacket('entry_second', 2), 1024);
+    evidence.begin('trace');
+    const watched = watchedGenerationMemory(memory, (at, pack) => {
+      evidence.held('trace', at, pack);
+    });
+    const looked = watched.peek(firstKey);
+    // Looked at rather than used, it is still the least recently used, and the first let go of.
+    watched.set(kvGenerationKey(SCOPE, 'entry_third'), heldPacket('entry_third', 2), 1024);
+
+    expect(looked?.pack.header.entryId).toBe('entry_first');
+    expect(evidence.snapshot('trace')[`${firstKey}|2`]?.headers['x-render']).toBe('2');
+    expect(watched.peek(firstKey)).toBeUndefined();
+  });
+
   it('releases overflowed trace owners while current checks retain observations', () => {
     const evidence = new GenerationEvidence(256);
     const key = kvGenerationKey(SCOPE, 'entry_history');
