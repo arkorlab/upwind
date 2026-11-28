@@ -28,7 +28,7 @@ catalog:
   # The runtime's suites check that its random-safe request context keeps Sentry's own random
   # reads working in workerd, as an application that reports to Sentry makes them. Tests only.
   '@sentry/core': 11.12.0
-  '@types/node': 24.19.2
+  '@types/node': 24.19.4
   '@types/ws': 8.18.2
   ws: 8.23.0
   socket.io: 4.8.4
