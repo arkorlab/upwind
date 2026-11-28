@@ -358,6 +358,9 @@ async function onBuildComplete(
     // The cron jobs the project declared: the host schedules them, and the Function they reach
     // answers the request they make like any other.
     ...(projectConfig.crons.length > 0 && { crons: projectConfig.crons }),
+    ...(projectConfig.rootRewriteHint !== undefined && {
+      rootRewriteHint: projectConfig.rootRewriteHint,
+    }),
     // The gates the build declares for its routes, which the host asks before it serves one; left
     // out of the Function's manifest, as nothing in the Function reads them.
     ...(gates !== undefined && { gates }),

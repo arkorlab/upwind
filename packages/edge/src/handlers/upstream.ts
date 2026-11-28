@@ -1,5 +1,15 @@
-import { type AppRuntime, functionFor, type ProjectManifest } from '@stayingupwind/core/manifest';
-import { PatternBudgetExceededError } from '@stayingupwind/core/request';
+import {
+  type AppRuntime,
+  functionFor,
+  isReserved,
+  type ProjectManifest,
+  rootRewriteEntry,
+} from '@stayingupwind/core/manifest';
+import {
+  acceptsHtml,
+  PatternBudgetExceededError,
+  PREFETCH_HINT_HEADERS,
+} from '@stayingupwind/core/request';
 
 import { withScopeRevision } from '../cache/scope-signal.ts';
 import type { DispatchApp, EdgeRuntime } from '../edge-runtime.ts';
@@ -28,12 +38,34 @@ export function functionOfRequest(
   app: AppRuntime | undefined,
   manifest: ProjectManifest | undefined,
   request: Request,
+  reason?: string,
 ): string | undefined {
   if (manifest === undefined || app?.functions === undefined) {
     return undefined;
   }
   try {
-    return functionFor(manifest, new URL(request.url), request.headers);
+    const url = new URL(request.url);
+    const owner = functionFor(manifest, url, request.headers, request.method);
+    // Only ordinary HTML clients with no Fetch Metadata take this fallback. The selected Worker
+    // still runs middleware on the original request, including locale redirects and cookies.
+    if (
+      owner !== undefined ||
+      reason !== 'sec-fetch-dest' ||
+      manifest.rootRewriteHint === undefined ||
+      url.pathname !== '/' ||
+      request.method !== 'GET'
+    )
+      return owner;
+    const { headers } = request;
+    if (
+      headers.has('sec-fetch-dest') ||
+      headers.has('sec-fetch-mode') ||
+      PREFETCH_HINT_HEADERS.some((name) => headers.has(name)) ||
+      !acceptsHtml(headers.get('accept')) ||
+      isReserved(manifest, url, headers, false)
+    )
+      return undefined;
+    return rootRewriteEntry(manifest)?.function;
   } catch (error) {
     // A pattern of the application's the edge does not run against this request
     // (`budgetPatterns`): the tables cannot say, and the first Worker hands it to the right one.

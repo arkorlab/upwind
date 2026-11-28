@@ -71,6 +71,7 @@ export interface BuildProjectManifestInput {
   readonly app: AppRuntime;
   readonly staticFiles?: Record<string, StaticFileEntry> | undefined;
   readonly middleware?: { readonly matchers: readonly MiddlewareMatcher[] } | undefined;
+  readonly rootRewriteHint?: string | undefined;
   readonly dynamicRoutes?: readonly DynamicRoute[] | undefined;
   readonly trailingSlash?: boolean | undefined;
   readonly reservedRoutes?: readonly ReservedRoute[] | undefined;
@@ -293,6 +294,7 @@ export function buildProjectManifest(input: BuildProjectManifestInput): ProjectM
     app: input.app,
     ...(input.staticFiles !== undefined && { staticFiles: input.staticFiles }),
     ...(input.middleware !== undefined && { middleware: input.middleware }),
+    ...(input.rootRewriteHint !== undefined && { rootRewriteHint: input.rootRewriteHint }),
     ...(input.dynamicRoutes !== undefined && { dynamicRoutes: input.dynamicRoutes }),
     ...(input.trailingSlash === true && { trailingSlash: true }),
     ...(input.reservedRoutes !== undefined && { reservedRoutes: input.reservedRoutes }),
@@ -711,4 +713,12 @@ export function findRouteEntry(
       : manifest.exactPathnames;
   const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
   return key === undefined ? undefined : manifest.routes[key];
+}
+
+/** The concrete, proved page configured as the likely destination of middleware at the root. */
+export function rootRewriteEntry(manifest: ProjectManifest): RouteEntry | undefined {
+  const pathname = manifest.rootRewriteHint;
+  if (pathname === undefined || !Object.hasOwn(manifest.routes, pathname)) return undefined;
+  const entry = manifest.routes[pathname];
+  return entry?.pathname === pathname ? entry : undefined;
 }

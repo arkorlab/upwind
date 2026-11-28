@@ -25,6 +25,7 @@ export {
   DEFAULT_CONTINUATION_CONFIG,
   fileRequestPathOf,
   findRouteEntry,
+  rootRewriteEntry,
   findStaticFile,
   MAX_MANIFEST_BYTES,
   staticFileBuildWithoutDpl,

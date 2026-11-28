@@ -217,7 +217,9 @@ const REFUSED_ASSET_MAX_ENTRIES = 1024;
  */
 export type RewriteSeen =
   | { readonly kind: 'served'; readonly route: string; readonly pathname: string }
-  | { readonly kind: 'unserved' };
+  | { readonly kind: 'unserved' }
+  /** The build's root guess was used; a subsequent middleware observation can replace it. */
+  | { readonly kind: 'hint-attempted' };
 
 /**
  * What a policy id KV holds no document under resolved to: the built-in the id names, or what stood

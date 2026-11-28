@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import { rootRewriteHintSchema } from '@stayingupwind/core/bundle';
 import { type CronJob, cronsSchema } from '@stayingupwind/core/cron';
 import * as z from '@stayingupwind/core/schema';
 import { parse as parseJsonc, type ParseError, printParseErrorCode } from 'jsonc-parser';
@@ -72,6 +73,7 @@ export interface ProjectConfig {
   /** The file the configuration came from, relative to the project directory; for messages. */
   readonly file: string | undefined;
   readonly crons: readonly CronJob[];
+  readonly rootRewriteHint?: string | undefined;
   /** Read from this adapter's own files and a host's, never from `vercel.json`. */
   readonly split?: ProjectSplit | undefined;
   /**
@@ -192,6 +194,7 @@ const deploySchema = z
 export type DeployConfig = z.infer<typeof deploySchema>;
 
 const upwindConfigSchema = projectConfigSchema.extend({
+  rootRewriteHint: rootRewriteHintSchema.optional(),
   functions: functionsSchema.optional(),
   deploy: deploySchema.optional(),
 });
@@ -352,10 +355,11 @@ export async function readProjectConfig(
     throw configError(file, describeIssues(parsed.error));
   }
   const split = parsed.data.functions?.split;
-  const { deploy } = parsed.data;
+  const { deploy, rootRewriteHint } = parsed.data;
   return {
     file,
     crons: parsed.data.crons ?? [],
+    ...(rootRewriteHint !== undefined && { rootRewriteHint }),
     ...(split !== undefined && { split }),
     ...(deploy !== undefined && { deploy }),
   };

@@ -1,10 +1,20 @@
 import { PRIMARY_FUNCTION } from '../bundle/function-name.ts';
 import { pageOfPagesData } from '../bundle/pages-data.ts';
-import { dynamicRouteFor, isExactPathname, isReserved } from './dynamic.ts';
-import { findRouteEntry } from './manifest.ts';
+import { middlewareApplies } from '../paas/middleware.ts';
+import { type CompiledRule, patternOf } from '../request/compiled-patterns.ts';
+import { execWithin } from '../request/pattern-budget.ts';
+import {
+  casedDynamicRouteFor,
+  isCanonicalPathname,
+  isExactPathname,
+  isReserved,
+  routedDynamicRouteFor,
+} from './dynamic.ts';
+import { findRouteEntry, staticFileKey } from './manifest.ts';
 import { pageKeyOf } from './page-keys.ts';
+import { firstReservedRule } from './reserved.ts';
 import { findRouteBody } from './route-bodies.ts';
-import type { AppRuntime, ProjectManifest } from './schema.ts';
+import type { AppRuntime, ProjectManifest, ReservedRoute } from './schema.ts';
 import { findStaticPage, findPagesFallback } from './static-pages.ts';
 const PAGES_FALLBACK_PRIVACY = 3;
 
@@ -33,6 +43,7 @@ export function functionFor(
   manifest: ProjectManifest,
   url: URL,
   headers: Headers,
+  method = 'GET',
 ): string | undefined {
   if (manifest.app.functions === undefined) {
     return PRIMARY_FUNCTION;
@@ -43,6 +54,24 @@ export function functionFor(
   const { pathname } = url;
   const props = pairedPropsFunction(manifest, url, headers);
   if (props !== undefined) return props;
+  const exact = exactFunction(manifest, pathname);
+  if (exact !== undefined) return exact;
+  // Where a member is answered, not with what: the router finds one by its slashed spelling
+  // wherever no redirect takes the slash off. Any redirect that would was asked above.
+  if (manifest.dynamicRoutes === undefined || !isCanonicalPathname(pathname, true))
+    return undefined;
+  const reserved =
+    manifest.reservedRoutes === undefined
+      ? undefined
+      : firstReservedRule(manifest.reservedRoutes, url, headers, false);
+  if (reserved !== undefined) {
+    return method === 'GET' ? rewriteFunction(manifest, url, headers, reserved) : undefined;
+  }
+  const dynamic = casedDynamicRouteFor(manifest.dynamicRoutes, url, headers);
+  return dynamic === undefined ? undefined : (dynamic.function ?? PRIMARY_FUNCTION);
+}
+
+function exactFunction(manifest: ProjectManifest, pathname: string): string | undefined {
   const shell = findRouteEntry(manifest, pathname);
   if (shell !== undefined) {
     return shell.function ?? PRIMARY_FUNCTION;
@@ -59,15 +88,48 @@ export function functionFor(
   if (exact !== undefined && exactFunctions !== undefined) {
     return exactFunctions[exact];
   }
-  if (isExactPathname(manifest, pathname)) {
-    return PRIMARY_FUNCTION;
+  return isExactPathname(manifest, pathname) ? PRIMARY_FUNCTION : undefined;
+}
+
+const FIRST_CAPTURE = '$1';
+const SIMPLE_SLUG = /^[\w-]+(?:\/[\w-]+)*$/u;
+
+/** The first Function for a proved afterFiles landing. The Function still routes the original URL. */
+function rewriteFunction(
+  manifest: ProjectManifest,
+  url: URL,
+  headers: Headers,
+  reserved: CompiledRule<ReservedRoute>,
+): string | undefined {
+  const destination = reserved.rule.dispatchDestination;
+  if (destination === undefined || staticFileKey(manifest, url.pathname) !== undefined) {
+    return undefined;
   }
-  // Where a member is answered, not with what: the router finds one by its slashed spelling wherever
-  // no redirect takes the slash off — `skipTrailingSlashRedirect` writes none — and a redirect that
-  // would is a reserved route, asked above. The edge serves a member at the slash only where the
-  // pages are kept there, but the Function that holds its route is the same either way.
-  const dynamic = dynamicRouteFor(manifest, url, headers, true);
-  return dynamic === undefined ? undefined : (dynamic.function ?? PRIMARY_FUNCTION);
+  if (
+    manifest.middleware !== undefined &&
+    middlewareApplies(manifest.middleware.matchers, url, headers)
+  ) {
+    return undefined;
+  }
+  let pathname = destination;
+  if (destination.endsWith(FIRST_CAPTURE)) {
+    const slug = execWithin(patternOf(reserved), url.pathname)?.[1];
+    // In particular, removing a suffix from the source can leave "." or "..".
+    if (slug === undefined || !SIMPLE_SLUG.test(slug)) return undefined;
+    pathname = destination.slice(0, -FIRST_CAPTURE.length) + slug;
+  }
+  const landed = new URL(url);
+  landed.pathname = pathname;
+  if (staticFileKey(manifest, pathname) !== undefined || manifest.images?.path === pathname) {
+    return undefined;
+  }
+  const exact = exactFunction(manifest, pathname);
+  const dynamic = routedDynamicRouteFor(manifest, landed, headers);
+  const owner = dynamic === undefined ? undefined : (dynamic.function ?? PRIMARY_FUNCTION);
+  // A prerendered member and an exact entrypoint can look alike in these tables. Where the
+  // dynamic and exact readings disagree, leave the rewritten-path decision to the router.
+  if (exact !== undefined && owner !== undefined && exact !== owner) return undefined;
+  return exact ?? owner;
 }
 
 /** Versioned props are sent to the Function of their actual member or native class. */

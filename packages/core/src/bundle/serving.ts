@@ -4,7 +4,7 @@ import { BEHAVIORAL_RESPONSE_HEADERS, CONTENT_DISPOSITION_HEADER } from '../requ
 import { filterShellResponseHeaders, rendersInline } from '../request/headers.ts';
 import { isInternalPage, nextNamespaceRoutes } from './base-path.ts';
 import { filesystemPagesOf } from './filesystem-pages.ts';
-import { type DynamicRouting, withFunctions } from './functions.ts';
+import { type DynamicRouting, isSplitBundle, withFunctions } from './functions.ts';
 import { withGates } from './gates.ts';
 import { memberRoutesOf } from './member-routes.ts';
 import { pageRoutes } from './page-routes.ts';
@@ -36,6 +36,21 @@ export type ServingBundle = Omit<
 const HTTP_OK = 200;
 /** The entrypoint kinds whose code renders a document, rather than answering with a response. */
 const DOCUMENT_KINDS: ReadonlySet<string> = new Set(['app-page', 'pages']);
+
+// An internal literal path, optionally ending in the first positional capture. A capture
+// used here is checked again on the request: an absent or encoded segment can land elsewhere.
+const DISPATCH_DESTINATION = /^(?:\/[\w-]+(?:\.[\w-]+)*)+(?:\/\$1)?$/u;
+
+function dispatchDestination(rule: Route): string | undefined {
+  const destination = rule.destination;
+  return destination !== undefined &&
+    !isConditional(rule) &&
+    rule.status === undefined &&
+    rule.headers === undefined &&
+    DISPATCH_DESTINATION.test(destination)
+    ? destination
+    : undefined;
+}
 
 /**
  * The primary output of each prerender group, by the id of every output in that group — so an
@@ -658,12 +673,18 @@ export function dynamicRouting(
   });
   // Redirects and rewrites Next.js evaluates ahead of its dynamic routes — and, for the ones
   // ahead of the filesystem, of a shipped file too.
-  const reserved = (routes: readonly Route[], beforeFiles: boolean): ReservedRoute[] => {
+  const reserved = (
+    routes: readonly Route[],
+    beforeFiles: boolean,
+    splitAfterFiles = false,
+  ): ReservedRoute[] => {
     return routes.map((route) => {
+      const destination = splitAfterFiles ? dispatchDestination(route) : undefined;
       return {
         sourceRegex: route.sourceRegex,
         ...conditionsOf(route),
         ...(beforeFiles && { beforeFiles: true as const }),
+        ...(destination !== undefined && { dispatchDestination: destination }),
       };
     });
   };
@@ -689,7 +710,7 @@ export function dynamicRouting(
       true,
     ),
     ...reserved(prefixed === undefined ? [] : [prefixed], false),
-    ...reserved(routing.afterFiles, false),
+    ...reserved(routing.afterFiles, false, isSplitBundle(bundle)),
     ...nextNamespaceRoutes(bundle),
   ];
   // Pathnames Next.js resolves exactly, ahead of its dynamic routes, that have no shell — under

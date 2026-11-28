@@ -674,6 +674,62 @@ describe('passthrough before unused pointer reads', () => {
       await waitOnExecutionContext(ctx);
     }
   });
+
+  it.each([true, false])(
+    'preserves the rewritten GET with published placement=%s',
+    async (hint) => {
+      const site = await seedSite({ document: pprDocument() });
+      const app = { ...site.pointer.app!, functions: { 'app-2': 'site-app-2' } };
+      const url = 'https://site.example/export/widget.txt?view=plain';
+      const calls: string[] = [];
+      const response = await handlePassthrough({
+        request: new Request(url, { headers: { cookie: 'selection=blue' } }),
+        forwarding: { previewDomain: 'example', previewHost: 'site.example', clientIp: undefined },
+        app,
+        manifest: {
+          ...site.manifest,
+          app,
+          reservedRoutes: [
+            {
+              sourceRegex: String.raw`^/export/(.+)\.txt$`,
+              ...(hint && { dispatchDestination: '/catalog/$1' }),
+            },
+          ],
+          dynamicRoutes: [{ sourceRegex: '^/catalog/[^/]+$', function: 'app-2' }],
+        },
+        host: standaloneHost(env),
+        runtime: standaloneRuntime(env, {
+          dispatchApp: (script, request) => {
+            calls.push(script);
+            if (script !== 'site-app-2') {
+              return Promise.resolve(
+                new Response(null, {
+                  status: MISDIRECTED_STATUS,
+                  headers: { [FUNCTION_HEADER]: 'app-2' },
+                }),
+              );
+            }
+            const received = new URL(request.url);
+            return Promise.resolve(
+              Response.json([received.pathname, received.search, request.headers.get('cookie')], {
+                headers: { 'x-application': 'catalog' },
+              }),
+            );
+          },
+        }),
+        reason: 'route-not-proved',
+      });
+
+      expect(calls).toStrictEqual(hint ? ['site-app-2'] : [app.scriptName, 'site-app-2']);
+      expect(response.status).toBe(200);
+      expect(response.headers.get('x-application')).toBe('catalog');
+      await expect(response.json()).resolves.toStrictEqual([
+        '/export/widget.txt',
+        '?view=plain',
+        'selection=blue',
+      ]);
+    },
+  );
 });
 
 describe.each(['passthrough', 'disabled'] as const)('opaque reasons in %s pointers', (mode) => {

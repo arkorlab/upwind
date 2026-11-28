@@ -1,3 +1,4 @@
+import { decodedPath, requestSpelling } from '../manifest/pages-data-prefix.ts';
 import * as z from '../schema/index.ts';
 
 /**
@@ -36,6 +37,23 @@ export type RouteHas = z.infer<typeof routeHasSchema>;
  */
 export const routerReferencesSchema = z.literal('one-pass');
 export type RouterReferences = z.infer<typeof routerReferencesSchema>;
+
+/** A single literal destination for a root rewrite, in the spelling of its request URL. */
+const MAX_REWRITE_HINT_CHARS = 1024;
+export const rootRewriteHintSchema = z
+  .string()
+  .max(MAX_REWRITE_HINT_CHARS)
+  .refine((pathname) => {
+    const decoded = decodedPath(pathname);
+    return (
+      pathname.startsWith('/') &&
+      pathname !== '/' &&
+      !pathname.includes('//') &&
+      decoded !== undefined &&
+      !/[?#[\]*:\\\p{Cc}]/u.test(decoded) &&
+      requestSpelling(pathname) === pathname
+    );
+  }, 'expected a concrete non-root pathname such as /welcome');
 
 /**
  * The name a build gives a gate, and a host binds one under: a lowercase letter, then lowercase
