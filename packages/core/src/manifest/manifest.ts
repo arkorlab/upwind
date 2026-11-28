@@ -697,28 +697,4 @@ export function staticFileBuildWithoutDpl(
   return kept && file.dplOnly === true ? undefined : file;
 }
 
-/**
- * Exact-match route lookup (case-sensitive, no trailing-slash normalization), of the pathname as
- * the request spelled it and then as Next.js finds the page it asks for (`pageKeyOf`). A route is
- * named by the spelling a request asks for it by — behind the slash, for an application that
- * keeps its pages there — so the other spelling finds nothing, and is Next.js's to redirect.
- */
-export function findRouteEntry(
-  manifest: ProjectManifest,
-  pathname: string,
-): RouteEntry | undefined {
-  const named =
-    manifest.routeBodies === undefined && manifest.staticPages === undefined
-      ? manifest.routes
-      : manifest.exactPathnames;
-  const key = named === undefined ? undefined : pageKeyOf(named, pathname, manifest);
-  return key === undefined ? undefined : manifest.routes[key];
-}
-
-/** The concrete, proved page configured as the likely destination of middleware at the root. */
-export function rootRewriteEntry(manifest: ProjectManifest): RouteEntry | undefined {
-  const pathname = manifest.rootRewriteHint;
-  if (pathname === undefined || !Object.hasOwn(manifest.routes, pathname)) return undefined;
-  const entry = manifest.routes[pathname];
-  return entry?.pathname === pathname ? entry : undefined;
-}
+export { findRouteEntry, rootRewriteEntry } from './page-keys.ts';
