@@ -88,10 +88,14 @@ function checkFiles(check: Check, files: ProjectManifest['staticFiles'] | null):
 export function checkManifestContentTypes(manifest: ProjectManifest): void {
   const check = headerCheck();
   const checkResponse = responseValueCheck();
+  const checkedRouteHeaders = new Set<Record<string, string>>();
   checkResponse(manifest.images?.contentSecurityPolicy);
   for (const route of Object.values(manifest.routes)) {
-    const headers = filterShellResponseHeaders(Object.entries(route.headers));
-    for (const value of Object.values(headers)) checkResponse(value);
+    if (!checkedRouteHeaders.has(route.headers)) {
+      const headers = filterShellResponseHeaders(Object.entries(route.headers));
+      for (const value of Object.values(headers)) checkResponse(value);
+      checkedRouteHeaders.add(route.headers);
+    }
     check(route.shell);
     checkEncodings(check, route.shellEncodings);
     if (route.segments !== undefined) {
