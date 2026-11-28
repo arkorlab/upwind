@@ -100,8 +100,8 @@ it('enumerates each distinct route header map once per manifest validation', () 
   const sharedKeys = vi.fn(Reflect.ownKeys);
   const separateKeys = vi.fn(Reflect.ownKeys);
   const headers = { [CSP]: "default-src 'self'" };
-  const shared = new Proxy(headers, { ownKeys: sharedKeys });
-  const separate = new Proxy({ ...headers }, { ownKeys: separateKeys });
+  const shared = new Proxy<typeof headers>(headers, { ownKeys: sharedKeys });
+  const separate = new Proxy<typeof headers>({ ...headers }, { ownKeys: separateKeys });
   const subject = {
     ...manifest,
     routes: {
