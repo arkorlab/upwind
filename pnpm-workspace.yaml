@@ -50,7 +50,7 @@ catalog:
   eslint-plugin-redos: 4.6.2
   eslint-plugin-regexp: 3.3.3
   eslint-plugin-security: 4.2.1
-  eslint-plugin-sonarjs: 4.2.2
+  eslint-plugin-sonarjs: 4.2.3
   eslint-plugin-unicorn: 79.0.0
   globals: 17.14.0
   # Reads a project's own config at build time, the way wrangler reads its own. Build-time only:
